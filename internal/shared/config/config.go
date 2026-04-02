@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 )
 
@@ -14,16 +13,16 @@ type Config struct {
 // Load reads configuration from environment variables.
 func Load() (*Config, error) {
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		return nil, fmt.Errorf("config: DATABASE_URL is required")
-	}
+	// if dsn == "" {
+	// 	return nil, fmt.Errorf("config: DATABASE_URL is required")
+	// }
 	addr := os.Getenv("HTTP_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
+	// if addr == "" {
+	// 	addr = ":8080"
+	// }
 	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
-		logLevel = "info"
+		logLevel = "debug"
 	}
 	return &Config{
 		DatabaseDSN: dsn,

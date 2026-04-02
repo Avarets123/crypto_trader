@@ -21,6 +21,8 @@ func New(level string) *zap.Logger {
 
 	cfg := zap.NewProductionConfig()
 	cfg.Level.SetLevel(lvl)
+	cfg.Development = false
+
 	log, _ := cfg.Build()
 	return log
 }

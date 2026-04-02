@@ -11,7 +11,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/shared/config"
-	"github.com/osman/bot-traider/internal/shared/db"
 	"github.com/osman/bot-traider/internal/shared/logger"
 	"github.com/osman/bot-traider/internal/shared/middleware"
 )
@@ -26,15 +25,15 @@ func main() {
 	log := logger.New(cfg.LogLevel)
 	defer log.Sync() //nolint:errcheck
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// defer cancel()
 
-	pool, err := db.NewPool(ctx, cfg.DatabaseDSN)
-	if err != nil {
-		log.Error("db connection failed", zap.Error(err))
-		os.Exit(1)
-	}
-	defer pool.Close()
+	// pool, err := db.NewPool(ctx, cfg.DatabaseDSN)
+	// if err != nil {
+	// 	log.Error("db connection failed", zap.Error(err))
+	// 	os.Exit(1)
+	// }
+	// defer pool.Close()
 
 	// Wire handlers here.
 	mux := http.NewServeMux()
