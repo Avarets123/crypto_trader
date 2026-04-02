@@ -1,22 +1,26 @@
 package logger
 
 import (
-	"log/slog"
-	"os"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-// New creates a slog.Logger with the given level (debug/info/warn/error).
-func New(level string) *slog.Logger {
-	var lvl slog.Level
+// New creates a zap.Logger with the given level (debug/info/warn/error).
+func New(level string) *zap.Logger {
+	var lvl zapcore.Level
 	switch level {
 	case "debug":
-		lvl = slog.LevelDebug
+		lvl = zapcore.DebugLevel
 	case "warn":
-		lvl = slog.LevelWarn
+		lvl = zapcore.WarnLevel
 	case "error":
-		lvl = slog.LevelError
+		lvl = zapcore.ErrorLevel
 	default:
-		lvl = slog.LevelInfo
+		lvl = zapcore.InfoLevel
 	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+
+	cfg := zap.NewProductionConfig()
+	cfg.Level.SetLevel(lvl)
+	log, _ := cfg.Build()
+	return log
 }

@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
@@ -18,18 +19,19 @@ import (
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("config load failed", "error", err)
+		zap.L().Error("config load failed", zap.Error(err))
 		os.Exit(1)
 	}
 
 	log := logger.New(cfg.LogLevel)
+	defer log.Sync() //nolint:errcheck
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	pool, err := db.NewPool(ctx, cfg.DatabaseDSN)
 	if err != nil {
-		log.Error("db connection failed", "error", err)
+		log.Error("db connection failed", zap.Error(err))
 		os.Exit(1)
 	}
 	defer pool.Close()
@@ -51,9 +53,9 @@ func main() {
 	}
 
 	go func() {
-		log.Info("server starting", "addr", cfg.HTTPAddr)
+		log.Info("server starting", zap.String("addr", cfg.HTTPAddr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error("server error", "error", err)
+			log.Error("server error", zap.Error(err))
 			os.Exit(1)
 		}
 	}()
@@ -65,7 +67,7 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("graceful shutdown failed", "error", err)
+		log.Error("graceful shutdown failed", zap.Error(err))
 	}
 	log.Info("server stopped")
 }
