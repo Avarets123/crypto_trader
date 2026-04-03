@@ -27,6 +27,7 @@ func New(ctx context.Context,log *zap.Logger) *Stats {
 			"binance": {},
 			"gateio":  {},
 			"bybit":   {},
+			"okx":     {},
 		},
 	}
 

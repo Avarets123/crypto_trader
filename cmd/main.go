@@ -13,6 +13,7 @@ import (
 	"github.com/osman/bot-traider/internal/binance"
 	"github.com/osman/bot-traider/internal/bybit"
 	"github.com/osman/bot-traider/internal/gateio"
+	"github.com/osman/bot-traider/internal/okx"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
 	"github.com/osman/bot-traider/internal/shared/logger"
@@ -64,6 +65,13 @@ func main() {
 	go func() {
 		if err := gateClient.Run(ctx); err != nil {
 			log.Error("gateio client stopped", zap.Error(err))
+		}
+	}()
+
+	okxClient := okx.NewClient(okx.LoadConfig(), log.With(zap.String("market", "okx")), st, tickerService)
+	go func() {
+		if err := okxClient.Run(ctx); err != nil {
+			log.Error("okx client stopped", zap.Error(err))
 		}
 	}()
 

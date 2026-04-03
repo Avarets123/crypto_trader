@@ -13,7 +13,7 @@ type Config struct {
 
 func LoadConfig() Config {
 	size := sharedconfig.GetEnvInt("BATCH_SIZE", 1000)
-	ms := sharedconfig.GetEnvInt("BATCH_INTERVAL_MS", 3500)
+	ms := sharedconfig.GetEnvInt("BATCH_INTERVAL_MS", 5500)
 	return Config{
 		BatchSize: size,
 		Interval:  time.Duration(ms) * time.Millisecond,
