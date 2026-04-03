@@ -2,11 +2,12 @@ package bybit
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/osman/bot-traider/internal/shared/ticker"
 )
 
 // Client управляет соединениями к Bybit WebSocket.
@@ -89,24 +90,16 @@ func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.W
 	return cancel, wg
 }
 
-// quoteFromSymbol определяет котируемую валюту по суффиксу символа.
-func quoteFromSymbol(symbol string) string {
-	if strings.HasSuffix(symbol, "BTC") {
-		return "BTC"
-	}
-	return "USDT"
-}
-
 // OnTicker реализует EventHandler — логирует обновление тикера.
-func (c *Client) OnTicker(data TickerData) {
+func (c *Client) OnTicker(t ticker.Ticker) {
 	c.logger.Info("ticker",
-		zap.String("symbol", data.Symbol),
-		zap.String("quote", quoteFromSymbol(data.Symbol)),
-		zap.String("price", data.LastPrice),
-		zap.String("open_24h", data.OpenPrice),
-		zap.String("high_24h", data.HighPrice24h),
-		zap.String("low_24h", data.LowPrice24h),
-		zap.String("vol_24h", data.Volume24h),
-		zap.String("change_pct", calcChangePct(data.OpenPrice, data.LastPrice)),
+		zap.String("symbol", t.Symbol),
+		zap.String("quote", t.Quote),
+		zap.String("price", t.Price),
+		zap.String("open_24h", t.Open24h),
+		zap.String("high_24h", t.High24h),
+		zap.String("low_24h", t.Low24h),
+		zap.String("vol_24h", t.Volume24h),
+		zap.String("change_pct", t.ChangePct),
 	)
 }

@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+
+	"github.com/osman/bot-traider/internal/shared/ticker"
 )
 
 // EventHandler обрабатывает входящие события от Bybit.
 type EventHandler interface {
-	OnTicker(data TickerData)
+	OnTicker(t ticker.Ticker)
 }
 
 // Connection управляет одним WebSocket-соединением с Bybit.
@@ -146,8 +149,25 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 	}
 
 	c.lastPrice[data.Symbol] = data.LastPrice
-	c.handler.OnTicker(data)
+	c.handler.OnTicker(ticker.Ticker{
+		Symbol:    data.Symbol,
+		Quote:     quoteFromSymbol(data.Symbol),
+		Price:     data.LastPrice,
+		Open24h:   data.OpenPrice,
+		High24h:   data.HighPrice24h,
+		Low24h:    data.LowPrice24h,
+		Volume24h: data.Volume24h,
+		ChangePct: calcChangePct(data.OpenPrice, data.LastPrice),
+	})
 	return nil
+}
+
+// quoteFromSymbol определяет котируемую валюту по суффиксу символа.
+func quoteFromSymbol(symbol string) string {
+	if strings.HasSuffix(symbol, "BTC") {
+		return "BTC"
+	}
+	return "USDT"
 }
 
 // calcChangePct вычисляет процентное изменение цены относительно открытия.

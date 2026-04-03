@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
@@ -47,8 +48,7 @@ func main() {
 	}()
 
 	binanceClient := binance.NewClient(cfg, log.With(zap.String("market", "binance")))
-	if err := binanceClient.Run(ctx); err != nil {
+	if err := binanceClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("binance client stopped", zap.Error(err))
-		os.Exit(1)
 	}
 }

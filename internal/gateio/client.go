@@ -2,11 +2,12 @@ package gateio
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/osman/bot-traider/internal/shared/ticker"
 )
 
 // Client управляет соединениями к Gate.io WebSocket.
@@ -90,24 +91,16 @@ func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.W
 	return cancel, wg
 }
 
-// quoteFromSymbol определяет котируемую валюту из пары формата BASE_QUOTE.
-func quoteFromSymbol(symbol string) string {
-	if i := strings.LastIndex(symbol, "_"); i >= 0 {
-		return symbol[i+1:]
-	}
-	return symbol
-}
-
 // OnTicker реализует EventHandler — логирует обновление тикера.
-func (c *Client) OnTicker(event TickerResult, changePct string) {
+func (c *Client) OnTicker(t ticker.Ticker) {
 	c.logger.Info("ticker",
-		zap.String("symbol", event.CurrencyPair),
-		zap.String("quote", quoteFromSymbol(event.CurrencyPair)),
-		zap.String("price", event.Last),
-		zap.String("open_24h", event.OpenPrice),
-		zap.String("high_24h", event.HighPrice),
-		zap.String("low_24h", event.LowPrice),
-		zap.String("vol_24h", event.QuoteVolume),
-		zap.String("change_pct", changePct),
+		zap.String("symbol", t.Symbol),
+		zap.String("quote", t.Quote),
+		zap.String("price", t.Price),
+		zap.String("open_24h", t.Open24h),
+		zap.String("high_24h", t.High24h),
+		zap.String("low_24h", t.Low24h),
+		zap.String("vol_24h", t.Volume24h),
+		zap.String("change_pct", t.ChangePct),
 	)
 }

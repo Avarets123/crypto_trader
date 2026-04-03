@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+
+	"github.com/osman/bot-traider/internal/shared/ticker"
 )
 
 const wsURL = "wss://api.gateio.ws/ws/v4/"
 
 // EventHandler обрабатывает входящие события от Gate.io.
 type EventHandler interface {
-	OnTicker(event TickerResult, changePct string)
+	OnTicker(t ticker.Ticker)
 }
 
 // Connection управляет одним WebSocket-соединением с Gate.io.
@@ -131,19 +134,36 @@ func (c *Connection) handleMessage(raw []byte) {
 		return
 	}
 
-	var ticker TickerResult
-	if err := json.Unmarshal(msg.Result, &ticker); err != nil {
+	var result TickerResult
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
 		c.logger.Error("unmarshal ticker", zap.Error(err))
 		return
 	}
 
-	if c.lastPrice[ticker.CurrencyPair] == ticker.Last {
+	if c.lastPrice[result.CurrencyPair] == result.Last {
 		return
 	}
 
-	changePct := calcChangePct(ticker.OpenPrice, ticker.Last)
-	c.lastPrice[ticker.CurrencyPair] = ticker.Last
-	c.handler.OnTicker(ticker, changePct)
+	changePct := calcChangePct(result.OpenPrice, result.Last)
+	c.lastPrice[result.CurrencyPair] = result.Last
+	c.handler.OnTicker(ticker.Ticker{
+		Symbol:    result.CurrencyPair,
+		Quote:     quoteFromSymbol(result.CurrencyPair),
+		Price:     result.Last,
+		Open24h:   result.OpenPrice,
+		High24h:   result.HighPrice,
+		Low24h:    result.LowPrice,
+		Volume24h: result.BaseVolume,
+		ChangePct: changePct,
+	})
+}
+
+// quoteFromSymbol определяет котируемую валюту из пары формата BASE_QUOTE.
+func quoteFromSymbol(symbol string) string {
+	if i := strings.LastIndex(symbol, "_"); i >= 0 {
+		return symbol[i+1:]
+	}
+	return symbol
 }
 
 // calcChangePct вычисляет процентное изменение цены относительно открытия.

@@ -4,16 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+
+	"github.com/osman/bot-traider/internal/shared/ticker"
 )
 
 // EventHandler обрабатывает входящие события от Binance.
 type EventHandler interface {
 	OnTrade(event TradeEvent)
-	OnTicker(event MiniTickerEvent, changePct string)
+	OnTicker(t ticker.Ticker)
 }
 
 // Connection управляет одним WebSocket-соединением с Binance.
@@ -152,8 +155,25 @@ func (c *Connection) handleMessage(raw []byte) {
 
 		changePct := calcChangePct(event.OpenPrice, event.LastPrice)
 		c.lastPrice[event.Symbol] = event.LastPrice
-		c.handler.OnTicker(event, changePct)
+		c.handler.OnTicker(ticker.Ticker{
+			Symbol:    event.Symbol,
+			Quote:     quoteFromSymbol(event.Symbol),
+			Price:     event.LastPrice,
+			Open24h:   event.OpenPrice,
+			High24h:   event.HighPrice,
+			Low24h:    event.LowPrice,
+			Volume24h: event.BaseVolume,
+			ChangePct: changePct,
+		})
 	}
+}
+
+// quoteFromSymbol определяет котируемую валюту по суффиксу символа.
+func quoteFromSymbol(symbol string) string {
+	if strings.HasSuffix(symbol, "BTC") {
+		return "BTC"
+	}
+	return "USDT"
 }
 
 // calcChangePct вычисляет процентное изменение цены относительно открытия.
