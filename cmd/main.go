@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/binance"
+	"github.com/osman/bot-traider/internal/gateio"
 	"github.com/osman/bot-traider/internal/shared/logger"
 )
 
@@ -28,9 +29,17 @@ func main() {
 		cancel()
 	}()
 
-	client := binance.NewClient(cfg, log)
-	if err := client.Run(ctx); err != nil {
-		log.Error("client stopped with error", zap.Error(err))
+	gateCfg := gateio.LoadConfig()
+	gateClient := gateio.NewClient(gateCfg, log.With(zap.String("market", "gateio")))
+	go func() {
+		if err := gateClient.Run(ctx); err != nil {
+			log.Error("gateio client stopped", zap.Error(err))
+		}
+	}()
+
+	binanceClient := binance.NewClient(cfg, log.With(zap.String("market", "binance")))
+	if err := binanceClient.Run(ctx); err != nil {
+		log.Error("binance client stopped", zap.Error(err))
 		os.Exit(1)
 	}
 }
