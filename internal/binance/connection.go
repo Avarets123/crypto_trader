@@ -130,13 +130,13 @@ func (c *Connection) handleMessage(raw []byte) {
 	}
 
 	switch {
-	case len(sm.Stream) > 6 && sm.Stream[len(sm.Stream)-6:] == "@trade":
-		var event TradeEvent
-		if err := json.Unmarshal(sm.Data, &event); err != nil {
-			c.logger.Error("unmarshal trade", zap.Error(err))
-			return
-		}
-		c.handler.OnTrade(event)
+	// case len(sm.Stream) > 6 && sm.Stream[len(sm.Stream)-6:] == "@trade":
+	// 	var event TradeEvent
+	// 	if err := json.Unmarshal(sm.Data, &event); err != nil {
+	// 		c.logger.Error("unmarshal trade", zap.Error(err))
+	// 		return
+	// 	}
+	// 	c.handler.OnTrade(event)
 
 	case len(sm.Stream) > 11 && sm.Stream[len(sm.Stream)-11:] == "@miniTicker":
 		var event MiniTickerEvent

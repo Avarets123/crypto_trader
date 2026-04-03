@@ -4,8 +4,9 @@ import "strings"
 
 const (
 	MaxStreamsPerConn = 1024
-	StreamsPerSymbol  = 2                                    // trade + miniTicker
-	MaxSymbolsPerConn = MaxStreamsPerConn / StreamsPerSymbol // = 512
+	// StreamsPerSymbol = 2 // trade + miniTicker
+	StreamsPerSymbol  = 1                                    // miniTicker only
+	MaxSymbolsPerConn = MaxStreamsPerConn / StreamsPerSymbol // = 1024
 )
 
 // ChunkSymbols разбивает срез символов на группы заданного размера.
@@ -26,7 +27,8 @@ func BuildStreamURL(symbols []string) string {
 	parts := make([]string, 0, len(symbols)*2)
 	for _, s := range symbols {
 		lower := strings.ToLower(s)
-		parts = append(parts, lower+"@trade", lower+"@miniTicker")
+		// parts = append(parts, lower+"@trade", lower+"@miniTicker")
+		parts = append(parts, lower+"@miniTicker")
 	}
 	return "wss://stream.binance.com:9443/stream?streams=" + strings.Join(parts, "/")
 }
