@@ -22,28 +22,38 @@ type currencyPair struct {
 // FetchUSDTSymbols получает актуальный список USDT-пар со статусом tradable.
 // Возвращает символы в формате BTC_USDT (native Gate.io).
 func FetchUSDTSymbols(ctx context.Context, log *zap.Logger) ([]string, error) {
+	return fetchSymbolsByQuote(ctx, "USDT")
+}
+
+// FetchBTCSymbols получает актуальный список BTC-пар со статусом tradable.
+// Возвращает символы в формате ETH_BTC (native Gate.io).
+func FetchBTCSymbols(ctx context.Context, log *zap.Logger) ([]string, error) {
+	return fetchSymbolsByQuote(ctx, "BTC")
+}
+
+func fetchSymbolsByQuote(ctx context.Context, quote string) ([]string, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, currencyPairsURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("FetchUSDTSymbols: build request: %w", err)
+		return nil, fmt.Errorf("fetchSymbolsByQuote(%s): build request: %w", quote, err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("FetchUSDTSymbols: do request: %w", err)
+		return nil, fmt.Errorf("fetchSymbolsByQuote(%s): do request: %w", quote, err)
 	}
 	defer resp.Body.Close()
 
 	var pairs []currencyPair
 	if err := json.NewDecoder(resp.Body).Decode(&pairs); err != nil {
-		return nil, fmt.Errorf("FetchUSDTSymbols: decode: %w", err)
+		return nil, fmt.Errorf("fetchSymbolsByQuote(%s): decode: %w", quote, err)
 	}
 
 	var result []string
 	for _, p := range pairs {
-		if p.Quote == "USDT" && p.TradeStatus == "tradable" {
+		if p.Quote == quote && p.TradeStatus == "tradable" {
 			result = append(result, p.ID)
 		}
 	}
@@ -95,10 +105,15 @@ func (w *SymbolWatcher) Run(ctx context.Context) error {
 
 // refresh получает символы и сравнивает с текущим списком.
 func (w *SymbolWatcher) refresh(ctx context.Context) error {
-	symbols, err := FetchUSDTSymbols(ctx, w.logger)
+	usdt, err := FetchUSDTSymbols(ctx, w.logger)
 	if err != nil {
 		return err
 	}
+	btc, err := FetchBTCSymbols(ctx, w.logger)
+	if err != nil {
+		return err
+	}
+	symbols := mergeSymbols(usdt, btc)
 
 	w.mu.Lock()
 	old := w.current
@@ -126,6 +141,21 @@ func (w *SymbolWatcher) refresh(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// mergeSymbols объединяет несколько срезов символов без дубликатов.
+func mergeSymbols(slices ...[]string) []string {
+	seen := make(map[string]struct{})
+	var result []string
+	for _, s := range slices {
+		for _, sym := range s {
+			if _, ok := seen[sym]; !ok {
+				seen[sym] = struct{}{}
+				result = append(result, sym)
+			}
+		}
+	}
+	return result
 }
 
 // compareSymbols возвращает добавленные и удалённые символы через map для O(n) сравнения.

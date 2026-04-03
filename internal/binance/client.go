@@ -2,6 +2,7 @@ package binance
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,10 +105,19 @@ func (c *Client) OnTrade(event TradeEvent) {
 	)
 }
 
+// quoteFromSymbol определяет котируемую валюту по суффиксу символа.
+func quoteFromSymbol(symbol string) string {
+	if strings.HasSuffix(symbol, "BTC") {
+		return "BTC"
+	}
+	return "USDT"
+}
+
 // OnTicker реализует EventHandler — логирует обновление тикера.
 func (c *Client) OnTicker(event MiniTickerEvent, changePct string) {
 	c.logger.Info("ticker",
 		zap.String("symbol", event.Symbol),
+		zap.String("quote", quoteFromSymbol(event.Symbol)),
 		zap.String("price", event.LastPrice),
 		zap.String("open_24h", event.OpenPrice),
 		zap.String("high_24h", event.HighPrice),

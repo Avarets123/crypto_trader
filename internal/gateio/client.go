@@ -2,6 +2,7 @@ package gateio
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,10 +90,19 @@ func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.W
 	return cancel, wg
 }
 
+// quoteFromSymbol определяет котируемую валюту из пары формата BASE_QUOTE.
+func quoteFromSymbol(symbol string) string {
+	if i := strings.LastIndex(symbol, "_"); i >= 0 {
+		return symbol[i+1:]
+	}
+	return symbol
+}
+
 // OnTicker реализует EventHandler — логирует обновление тикера.
 func (c *Client) OnTicker(event TickerResult, changePct string) {
 	c.logger.Info("ticker",
 		zap.String("symbol", event.CurrencyPair),
+		zap.String("quote", quoteFromSymbol(event.CurrencyPair)),
 		zap.String("price", event.Last),
 		zap.String("open_24h", event.OpenPrice),
 		zap.String("high_24h", event.HighPrice),
