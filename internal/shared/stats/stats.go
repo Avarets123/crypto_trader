@@ -30,7 +30,7 @@ func New(ctx context.Context,log *zap.Logger) *Stats {
 		},
 	}
 
-	st.LogPeriodically(ctx, time.Second*5, log,)
+	st.LogPeriodically(ctx, time.Second*10, log,)
 
 	return st
 }

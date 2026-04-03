@@ -12,6 +12,7 @@ import (
 
 	"github.com/osman/bot-traider/internal/binance"
 	"github.com/osman/bot-traider/internal/bybit"
+	"github.com/osman/bot-traider/internal/gateio"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
 	"github.com/osman/bot-traider/internal/shared/logger"
@@ -59,12 +60,12 @@ func main() {
 		}
 	}()
 
-	// gateClient := gateio.NewClient(gateio.LoadConfig(), log.With(zap.String("market", "gateio")), st, svc)
-	// go func() {
-	// 	if err := gateClient.Run(ctx); err != nil {
-	// 		log.Error("gateio client stopped", zap.Error(err))
-	// 	}
-	// }()
+	gateClient := gateio.NewClient(gateio.LoadConfig(), log.With(zap.String("market", "gateio")), st, tickerService)
+	go func() {
+		if err := gateClient.Run(ctx); err != nil {
+			log.Error("gateio client stopped", zap.Error(err))
+		}
+	}()
 
 	binanceCfg := binance.LoadConfig()
 	binanceClient := binance.NewClient(binanceCfg, log.With(zap.String("market", "binance")), st, tickerService)

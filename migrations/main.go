@@ -8,9 +8,12 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	godotenv.Load()
+
 	dsn := os.Getenv("POSTGRES_DSN")
 	if dsn == "" {
 		fmt.Fprintln(os.Stderr, "POSTGRES_DSN is required")
