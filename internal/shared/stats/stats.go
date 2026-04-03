@@ -21,14 +21,18 @@ type Stats struct {
 }
 
 // New создаёт Stats с прединициализированными записями для каждой биржи.
-func New() *Stats {
-	return &Stats{
+func New(ctx context.Context,log *zap.Logger) *Stats {
+	st := &Stats{
 		exchanges: map[string]*ExchangeStats{
 			"binance": {},
 			"gateio":  {},
 			"bybit":   {},
 		},
 	}
+
+	st.LogPeriodically(ctx, time.Second*5, log,)
+
+	return st
 }
 
 // Record атомарно увеличивает счётчики для указанной биржи.

@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/shared/stats"
-	"github.com/osman/bot-traider/internal/shared/ticker"
+	"github.com/osman/bot-traider/internal/ticker"
 )
 
 // EventHandler обрабатывает входящие события от Gate.io.
@@ -160,6 +160,7 @@ func (c *Connection) handleMessage(raw []byte) {
 		Low24h:    result.LowPrice,
 		Volume24h: result.BaseVolume,
 		ChangePct: changePct,
+		CreatedAt: time.Now(),
 	})
 }
 

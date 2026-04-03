@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"time"
@@ -12,16 +13,22 @@ type Base struct {
 	MaxWait          time.Duration
 	SymbolRefreshMin int
 	DevMode          bool
+	PostgresDSN string
 }
 
 // LoadBase читает общий конфиг из переменных окружения.
 func LoadBase() Base {
 	maxWaitSec := GetEnvInt("RECONNECT_MAX_WAIT", 60)
+	postgresDSN := os.Getenv("POSTGRES_DSN")
+	if postgresDSN == "" {
+		log.Fatal("POSTGRES_DSN not passed!")
+	}
 	return Base{
 		LogLevel:         GetEnv("LOG_LEVEL", "info"),
 		MaxWait:          time.Duration(maxWaitSec) * time.Second,
 		SymbolRefreshMin: GetEnvInt("SYMBOL_REFRESH_MIN", 30),
 		DevMode:          GetEnv("DEV_MODE", "false") == "true",
+		PostgresDSN: postgresDSN,
 	}
 }
 

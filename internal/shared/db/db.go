@@ -12,8 +12,8 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("db.NewPool parse config: %w", err)
 	}
-	cfg.MaxConns = 25
-	cfg.MinConns = 5
+	cfg.MaxConns = 35
+	cfg.MinConns = 10
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("db.NewPool connect: %w", err)
@@ -23,3 +23,4 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	}
 	return pool, nil
 }
+

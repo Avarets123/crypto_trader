@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/shared/stats"
-	"github.com/osman/bot-traider/internal/shared/ticker"
+	"github.com/osman/bot-traider/internal/ticker"
 )
 
 // Client управляет соединениями к Binance WebSocket.
@@ -16,6 +16,7 @@ type Client struct {
 	config *Config
 	logger *zap.Logger
 	stats  *stats.Stats
+	svc *ticker.TickerService
 
 	mu          sync.Mutex
 	cancelConns context.CancelFunc
@@ -24,11 +25,12 @@ type Client struct {
 }
 
 // NewClient создаёт новый Client.
-func NewClient(cfg *Config, log *zap.Logger, st *stats.Stats) *Client {
+func NewClient(cfg *Config, log *zap.Logger, st *stats.Stats, w *ticker.TickerService) *Client {
 	return &Client{
 		config:  cfg,
 		logger:  log,
 		stats:   st,
+		svc:     w,
 		connsWg: &sync.WaitGroup{},
 	}
 }
@@ -110,4 +112,8 @@ func (c *Client) OnTrade(event TradeEvent) {
 }
 
 // OnTicker реализует EventHandler.
-func (c *Client) OnTicker(_ ticker.Ticker) {}
+func (c *Client) OnTicker(t ticker.Ticker) {
+	if c.svc != nil {
+		c.svc.Send(t)
+	}
+}

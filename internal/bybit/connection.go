@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/shared/stats"
-	"github.com/osman/bot-traider/internal/shared/ticker"
+	"github.com/osman/bot-traider/internal/ticker"
 )
 
 // EventHandler обрабатывает входящие события от Bybit.
@@ -165,6 +165,7 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 		Low24h:    data.LowPrice24h,
 		Volume24h: data.Volume24h,
 		ChangePct: calcChangePct(data.OpenPrice, data.LastPrice),
+		CreatedAt: time.Now(),
 	})
 	return nil
 }
