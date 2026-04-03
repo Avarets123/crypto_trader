@@ -1,0 +1,112 @@
+package bybit
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"time"
+
+	"go.uber.org/zap"
+)
+
+// Client управляет соединениями к Bybit WebSocket.
+type Client struct {
+	config *Config
+	logger *zap.Logger
+
+	mu          sync.Mutex
+	cancelConns context.CancelFunc
+	connsWg     *sync.WaitGroup
+	connCount   int
+}
+
+// NewClient создаёт новый Client.
+func NewClient(cfg *Config, log *zap.Logger) *Client {
+	return &Client{
+		config:  cfg,
+		logger:  log,
+		connsWg: &sync.WaitGroup{},
+	}
+}
+
+// Run запускает SymbolWatcher и управляет соединениями до ctx.Done().
+func (c *Client) Run(ctx context.Context) error {
+	interval := time.Duration(c.config.SymbolRefreshMin) * time.Minute
+	watcher := NewSymbolWatcher(interval, c.logger, c.onSymbolsChanged)
+	return watcher.Run(ctx)
+}
+
+// onSymbolsChanged вызывается при каждом изменении списка символов.
+func (c *Client) onSymbolsChanged(added, removed, all []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	oldCancel := c.cancelConns
+	oldWg := c.connsWg
+	oldCount := c.connCount
+
+	if oldCancel != nil {
+		oldCancel()
+		oldWg.Wait()
+	}
+
+	chunks := ChunkSymbols(all, MaxSymbolsPerConn)
+	newCount := len(chunks)
+
+	c.logger.Info("restarting connections",
+		zap.Int("old_count", oldCount),
+		zap.Int("new_count", newCount),
+		zap.Int("total_symbols", len(all)),
+	)
+
+	cancel, wg := c.startConnections(all)
+	c.cancelConns = cancel
+	c.connsWg = wg
+	c.connCount = newCount
+}
+
+// startConnections создаёт и запускает Connection для каждой группы символов.
+func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.WaitGroup) {
+	ctx, cancel := context.WithCancel(context.Background())
+	wg := &sync.WaitGroup{}
+
+	chunks := ChunkSymbols(symbols, MaxSymbolsPerConn)
+
+	c.logger.Info("starting connections",
+		zap.Int("total_symbols", len(symbols)),
+		zap.Int("connections", len(chunks)),
+	)
+
+	for i, chunk := range chunks {
+		conn := NewConnection(i, chunk, c.logger, c, c.config.MaxWait)
+		wg.Add(1)
+		go func(conn *Connection) {
+			defer wg.Done()
+			conn.Run(ctx)
+		}(conn)
+	}
+
+	return cancel, wg
+}
+
+// quoteFromSymbol определяет котируемую валюту по суффиксу символа.
+func quoteFromSymbol(symbol string) string {
+	if strings.HasSuffix(symbol, "BTC") {
+		return "BTC"
+	}
+	return "USDT"
+}
+
+// OnTicker реализует EventHandler — логирует обновление тикера.
+func (c *Client) OnTicker(data TickerData) {
+	c.logger.Info("ticker",
+		zap.String("symbol", data.Symbol),
+		zap.String("quote", quoteFromSymbol(data.Symbol)),
+		zap.String("price", data.LastPrice),
+		zap.String("open_24h", data.OpenPrice),
+		zap.String("high_24h", data.HighPrice24h),
+		zap.String("low_24h", data.LowPrice24h),
+		zap.String("vol_24h", data.Volume24h),
+		zap.String("change_pct", calcChangePct(data.OpenPrice, data.LastPrice)),
+	)
+}

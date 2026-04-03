@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/binance"
+	"github.com/osman/bot-traider/internal/bybit"
 	"github.com/osman/bot-traider/internal/gateio"
 	"github.com/osman/bot-traider/internal/shared/logger"
 )
@@ -27,6 +28,14 @@ func main() {
 		<-quit
 		log.Info("shutting down")
 		cancel()
+	}()
+
+	bybitCfg := bybit.LoadConfig()
+	bybitClient := bybit.NewClient(bybitCfg, log.With(zap.String("market", "bybit")))
+	go func() {
+		if err := bybitClient.Run(ctx); err != nil {
+			log.Error("bybit client stopped", zap.Error(err))
+		}
 	}()
 
 	gateCfg := gateio.LoadConfig()
