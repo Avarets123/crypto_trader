@@ -7,6 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/osman/bot-traider/internal/shared/stats"
 	"github.com/osman/bot-traider/internal/shared/ticker"
 )
 
@@ -14,6 +15,7 @@ import (
 type Client struct {
 	config *Config
 	logger *zap.Logger
+	stats  *stats.Stats
 
 	mu          sync.Mutex
 	cancelConns context.CancelFunc
@@ -22,10 +24,11 @@ type Client struct {
 }
 
 // NewClient создаёт новый Client.
-func NewClient(cfg *Config, log *zap.Logger) *Client {
+func NewClient(cfg *Config, log *zap.Logger, st *stats.Stats) *Client {
 	return &Client{
 		config:  cfg,
 		logger:  log,
+		stats:   st,
 		connsWg: &sync.WaitGroup{},
 	}
 }
@@ -80,7 +83,7 @@ func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.W
 	)
 
 	for i, chunk := range chunks {
-		conn := NewConnection(i, chunk, c.logger, c, c.config.MaxWait)
+		conn := NewConnection(i, chunk, c.logger, c, c.config.MaxWait, c.stats)
 		wg.Add(1)
 		go func(conn *Connection) {
 			defer wg.Done()
@@ -91,16 +94,5 @@ func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.W
 	return cancel, wg
 }
 
-// OnTicker реализует EventHandler — логирует обновление тикера.
-func (c *Client) OnTicker(t ticker.Ticker) {
-	c.logger.Info("ticker",
-		zap.String("symbol", t.Symbol),
-		zap.String("quote", t.Quote),
-		zap.String("price", t.Price),
-		zap.String("open_24h", t.Open24h),
-		zap.String("high_24h", t.High24h),
-		zap.String("low_24h", t.Low24h),
-		zap.String("vol_24h", t.Volume24h),
-		zap.String("change_pct", t.ChangePct),
-	)
-}
+// OnTicker реализует EventHandler.
+func (c *Client) OnTicker(_ ticker.Ticker) {}

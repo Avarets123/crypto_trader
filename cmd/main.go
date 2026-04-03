@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/osman/bot-traider/internal/bybit"
 	"github.com/osman/bot-traider/internal/gateio"
 	"github.com/osman/bot-traider/internal/shared/logger"
+	"github.com/osman/bot-traider/internal/shared/stats"
 )
 
 func main() {
@@ -31,8 +33,11 @@ func main() {
 		cancel()
 	}()
 
+
 	bybitCfg := bybit.LoadConfig()
-	bybitClient := bybit.NewClient(bybitCfg, log.With(zap.String("market", "bybit")))
+	stats := stats.New()
+	stats.LogPeriodically(ctx, time.Second * 5, log)
+	bybitClient := bybit.NewClient(bybitCfg, log.With(zap.String("market", "bybit")), stats)
 	go func() {
 		if err := bybitClient.Run(ctx); err != nil {
 			log.Error("bybit client stopped", zap.Error(err))
@@ -40,14 +45,14 @@ func main() {
 	}()
 
 	gateCfg := gateio.LoadConfig()
-	gateClient := gateio.NewClient(gateCfg, log.With(zap.String("market", "gateio")))
+	gateClient := gateio.NewClient(gateCfg, log.With(zap.String("market", "gateio")), stats)
 	go func() {
 		if err := gateClient.Run(ctx); err != nil {
 			log.Error("gateio client stopped", zap.Error(err))
 		}
 	}()
 
-	binanceClient := binance.NewClient(cfg, log.With(zap.String("market", "binance")))
+	binanceClient := binance.NewClient(cfg, log.With(zap.String("market", "binance")), stats)
 	if err := binanceClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("binance client stopped", zap.Error(err))
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
+	"github.com/osman/bot-traider/internal/shared/stats"
 	"github.com/osman/bot-traider/internal/shared/ticker"
 )
 
@@ -26,10 +27,12 @@ type Connection struct {
 	handler   EventHandler
 	maxWait   time.Duration
 	lastPrice map[string]string
+				stats     *stats.Stats
+
 }
 
 // NewConnection создаёт новое Connection.
-func NewConnection(id int, symbols []string, log *zap.Logger, h EventHandler, maxWait time.Duration) *Connection {
+func NewConnection(id int, symbols []string, log *zap.Logger, h EventHandler, maxWait time.Duration, st *stats.Stats) *Connection {
 	return &Connection{
 		id:        id,
 		symbols:   symbols,
@@ -37,6 +40,8 @@ func NewConnection(id int, symbols []string, log *zap.Logger, h EventHandler, ma
 		handler:   h,
 		maxWait:   maxWait,
 		lastPrice: make(map[string]string),
+		stats: st,
+
 	}
 }
 
@@ -149,6 +154,7 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 	}
 
 	c.lastPrice[data.Symbol] = data.LastPrice
+	c.stats.Record("bybit", len(raw))
 	c.handler.OnTicker(ticker.Ticker{
 		Exchange:  "bybit",
 		Symbol:    data.Symbol,
