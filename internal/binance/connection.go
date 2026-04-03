@@ -156,6 +156,7 @@ func (c *Connection) handleMessage(raw []byte) {
 		changePct := calcChangePct(event.OpenPrice, event.LastPrice)
 		c.lastPrice[event.Symbol] = event.LastPrice
 		c.handler.OnTicker(ticker.Ticker{
+			Exchange:  "binance",
 			Symbol:    event.Symbol,
 			Quote:     quoteFromSymbol(event.Symbol),
 			Price:     event.LastPrice,

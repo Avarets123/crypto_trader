@@ -147,6 +147,7 @@ func (c *Connection) handleMessage(raw []byte) {
 	changePct := calcChangePct(result.OpenPrice, result.Last)
 	c.lastPrice[result.CurrencyPair] = result.Last
 	c.handler.OnTicker(ticker.Ticker{
+		Exchange:  "gateio",
 		Symbol:    result.CurrencyPair,
 		Quote:     quoteFromSymbol(result.CurrencyPair),
 		Price:     result.Last,

@@ -2,6 +2,7 @@ package ticker
 
 // Ticker — унифицированная модель тикера для всех бирж.
 type Ticker struct {
+	Exchange  string // биржа-источник (binance, gateio, bybit)
 	Symbol    string // торговая пара (BTCUSDT / BTC_USDT)
 	Quote     string // котируемая валюта (USDT, BTC)
 	Price     string // последняя цена

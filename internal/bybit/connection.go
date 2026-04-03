@@ -150,6 +150,7 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 
 	c.lastPrice[data.Symbol] = data.LastPrice
 	c.handler.OnTicker(ticker.Ticker{
+		Exchange:  "bybit",
 		Symbol:    data.Symbol,
 		Quote:     quoteFromSymbol(data.Symbol),
 		Price:     data.LastPrice,
