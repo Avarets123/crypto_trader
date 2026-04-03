@@ -33,10 +33,10 @@ type Connection struct {
 }
 
 // NewConnection создаёт новое Connection.
-func NewConnection(id int, symbols []string, log *zap.Logger, h EventHandler, maxWait time.Duration, st *stats.Stats) *Connection {
+func NewConnection(id int, symbols []string, wsBaseURL string, log *zap.Logger, h EventHandler, maxWait time.Duration, st *stats.Stats) *Connection {
 	return &Connection{
 		id:        id,
-		url:       BuildStreamURL(symbols),
+		url:       BuildStreamURL(wsBaseURL, symbols),
 		symbols:   symbols,
 		logger:    log,
 		lastPrice: make(map[string]string),

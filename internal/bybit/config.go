@@ -1,40 +1,28 @@
 package bybit
 
 import (
-	"os"
-	"strconv"
-	"time"
+	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 )
 
 // Config содержит настройки bybit ws-клиента.
 type Config struct {
-	LogLevel         string
-	MaxWait          time.Duration
-	SymbolRefreshMin int
+	sharedconfig.Base
+	WSURL   string
+	RestURL string
 }
 
 // LoadConfig читает конфиг из переменных окружения с fallback на дефолты.
 func LoadConfig() *Config {
-	maxWaitSec := getEnvInt("RECONNECT_MAX_WAIT", 60)
+	base := sharedconfig.LoadBase()
+	wsURL := "wss://stream.bybit.com/v5/public/spot"
+	restURL := "https://api.bybit.com/v5/market/instruments-info?category=spot"
+	if base.DevMode {
+		wsURL = "wss://stream-testnet.bybit.com/v5/public/spot"
+		restURL = "https://api-testnet.bybit.com/v5/market/instruments-info?category=spot"
+	}
 	return &Config{
-		LogLevel:         getEnv("LOG_LEVEL", "info"),
-		MaxWait:          time.Duration(maxWaitSec) * time.Second,
-		SymbolRefreshMin: getEnvInt("SYMBOL_REFRESH_MIN", 30),
+		Base:    base,
+		WSURL:   wsURL,
+		RestURL: restURL,
 	}
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
 }

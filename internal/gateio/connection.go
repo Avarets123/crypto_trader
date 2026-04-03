@@ -14,8 +14,6 @@ import (
 	"github.com/osman/bot-traider/internal/shared/ticker"
 )
 
-const wsURL = "wss://api.gateio.ws/ws/v4/"
-
 // EventHandler обрабатывает входящие события от Gate.io.
 type EventHandler interface {
 	OnTicker(t ticker.Ticker)
@@ -24,6 +22,7 @@ type EventHandler interface {
 // Connection управляет одним WebSocket-соединением с Gate.io.
 type Connection struct {
 	id        int
+	wsURL     string
 	symbols   []string
 	logger    *zap.Logger
 	lastPrice map[string]string
@@ -33,9 +32,10 @@ type Connection struct {
 }
 
 // NewConnection создаёт новое Connection.
-func NewConnection(id int, symbols []string, log *zap.Logger, h EventHandler, maxWait time.Duration, st *stats.Stats) *Connection {
+func NewConnection(id int, symbols []string, wsURL string, log *zap.Logger, h EventHandler, maxWait time.Duration, st *stats.Stats) *Connection {
 	return &Connection{
 		id:        id,
+		wsURL:     wsURL,
 		symbols:   symbols,
 		logger:    log,
 		lastPrice: make(map[string]string),
@@ -85,7 +85,7 @@ func (c *Connection) Run(ctx context.Context) {
 
 // connect устанавливает одно WS-соединение и читает сообщения до ошибки или ctx.Done().
 func (c *Connection) connect(ctx context.Context) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}

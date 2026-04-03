@@ -22,26 +22,26 @@ type EventHandler interface {
 // Connection управляет одним WebSocket-соединением с Bybit.
 type Connection struct {
 	id        int
+	wsURL     string
 	symbols   []string
 	logger    *zap.Logger
 	handler   EventHandler
 	maxWait   time.Duration
 	lastPrice map[string]string
-				stats     *stats.Stats
-
+	stats     *stats.Stats
 }
 
 // NewConnection создаёт новое Connection.
-func NewConnection(id int, symbols []string, log *zap.Logger, h EventHandler, maxWait time.Duration, st *stats.Stats) *Connection {
+func NewConnection(id int, symbols []string, wsURL string, log *zap.Logger, h EventHandler, maxWait time.Duration, st *stats.Stats) *Connection {
 	return &Connection{
 		id:        id,
+		wsURL:     wsURL,
 		symbols:   symbols,
 		logger:    log,
 		handler:   h,
 		maxWait:   maxWait,
 		lastPrice: make(map[string]string),
-		stats: st,
-
+		stats:     st,
 	}
 }
 
@@ -85,7 +85,7 @@ func (c *Connection) Run(ctx context.Context) {
 
 // connect устанавливает одно WS-соединение и читает сообщения до ошибки или ctx.Done().
 func (c *Connection) connect(ctx context.Context) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsEndpoint, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}

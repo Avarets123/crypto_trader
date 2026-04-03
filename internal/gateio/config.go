@@ -1,40 +1,23 @@
 package gateio
 
 import (
-	"os"
-	"strconv"
-	"time"
+	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 )
 
 // Config содержит настройки gateio ws-клиента.
 type Config struct {
-	LogLevel         string
-	MaxWait          time.Duration
-	SymbolRefreshMin int
+	sharedconfig.Base
+	WSURL   string
+	RestURL string
 }
 
 // LoadConfig читает конфиг из переменных окружения с fallback на дефолты.
+// Gate.io не имеет публичного testnet, поэтому DevMode не меняет URL.
 func LoadConfig() *Config {
-	maxWaitSec := getEnvInt("RECONNECT_MAX_WAIT", 60)
+	base := sharedconfig.LoadBase()
 	return &Config{
-		LogLevel:         getEnv("LOG_LEVEL", "info"),
-		MaxWait:          time.Duration(maxWaitSec) * time.Second,
-		SymbolRefreshMin: getEnvInt("SYMBOL_REFRESH_MIN", 30),
+		Base:    base,
+		WSURL:   "wss://api.gateio.ws/ws/v4/",
+		RestURL: "https://api.gateio.ws/api/v4/spot/currency_pairs",
 	}
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
 }

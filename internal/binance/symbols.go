@@ -11,8 +11,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const exchangeInfoURL = "https://api.binance.com/api/v3/exchangeInfo"
-
 type exchangeInfo struct {
 	Symbols []symbolInfo `json:"symbols"`
 }
@@ -23,21 +21,11 @@ type symbolInfo struct {
 	QuoteAsset string `json:"quoteAsset"`
 }
 
-// FetchUSDTSymbols получает актуальный список USDT-пар со статусом TRADING.
-func FetchUSDTSymbols(ctx context.Context, log *zap.Logger) ([]string, error) {
-	return fetchSymbolsByQuote(ctx, "USDT")
-}
-
-// FetchBTCSymbols получает актуальный список BTC-пар со статусом TRADING.
-func FetchBTCSymbols(ctx context.Context, log *zap.Logger) ([]string, error) {
-	return fetchSymbolsByQuote(ctx, "BTC")
-}
-
-func fetchSymbolsByQuote(ctx context.Context, quote string) ([]string, error) {
+func fetchSymbolsByQuote(ctx context.Context, restURL, quote string) ([]string, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, exchangeInfoURL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, restURL+"/api/v3/exchangeInfo", nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetchSymbolsByQuote(%s): build request: %w", quote, err)
 	}
@@ -66,6 +54,7 @@ func fetchSymbolsByQuote(ctx context.Context, quote string) ([]string, error) {
 type SymbolWatcher struct {
 	logger   *zap.Logger
 	interval time.Duration
+	restURL  string
 	current  []string
 	mu       sync.RWMutex
 	onChange func(added []string, removed []string, all []string)
@@ -74,12 +63,14 @@ type SymbolWatcher struct {
 // NewSymbolWatcher создаёт новый SymbolWatcher.
 func NewSymbolWatcher(
 	interval time.Duration,
+	restURL string,
 	log *zap.Logger,
 	onChange func(added, removed, all []string),
 ) *SymbolWatcher {
 	return &SymbolWatcher{
 		logger:   log,
 		interval: interval,
+		restURL:  restURL,
 		onChange: onChange,
 	}
 }
@@ -107,11 +98,11 @@ func (w *SymbolWatcher) Run(ctx context.Context) error {
 
 // refresh получает символы и сравнивает с текущим списком.
 func (w *SymbolWatcher) refresh(ctx context.Context) error {
-	usdt, err := FetchUSDTSymbols(ctx, w.logger)
+	usdt, err := fetchSymbolsByQuote(ctx, w.restURL, "USDT")
 	if err != nil {
 		return err
 	}
-	btc, err := FetchBTCSymbols(ctx, w.logger)
+	btc, err := fetchSymbolsByQuote(ctx, w.restURL, "BTC")
 	if err != nil {
 		return err
 	}

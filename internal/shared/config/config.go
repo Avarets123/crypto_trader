@@ -2,22 +2,43 @@ package config
 
 import (
 	"os"
+	"strconv"
+	"time"
 )
 
-type Config struct {
-	DatabaseDSN string
-	LogLevel    string
+// Base — общие настройки для всех бирж.
+type Base struct {
+	LogLevel         string
+	MaxWait          time.Duration
+	SymbolRefreshMin int
+	DevMode          bool
 }
 
-// Load reads configuration from environment variables.
-func Load() (*Config, error) {
-	dsn := os.Getenv("DATABASE_URL")
-	logLevel := os.Getenv("LOG_LEVEL")
-	if logLevel == "" {
-		logLevel = "debug"
+// LoadBase читает общий конфиг из переменных окружения.
+func LoadBase() Base {
+	maxWaitSec := GetEnvInt("RECONNECT_MAX_WAIT", 60)
+	return Base{
+		LogLevel:         GetEnv("LOG_LEVEL", "info"),
+		MaxWait:          time.Duration(maxWaitSec) * time.Second,
+		SymbolRefreshMin: GetEnvInt("SYMBOL_REFRESH_MIN", 30),
+		DevMode:          GetEnv("DEV_MODE", "false") == "true",
 	}
-	return &Config{
-		DatabaseDSN: dsn,
-		LogLevel:    logLevel,
-	}, nil
+}
+
+// GetEnv возвращает значение переменной окружения или fallback.
+func GetEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// GetEnvInt возвращает целочисленное значение переменной окружения или fallback.
+func GetEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }

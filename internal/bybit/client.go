@@ -36,7 +36,7 @@ func NewClient(cfg *Config, log *zap.Logger, st *stats.Stats) *Client {
 // Run запускает SymbolWatcher и управляет соединениями до ctx.Done().
 func (c *Client) Run(ctx context.Context) error {
 	interval := time.Duration(c.config.SymbolRefreshMin) * time.Minute
-	watcher := NewSymbolWatcher(interval, c.logger, c.onSymbolsChanged)
+	watcher := NewSymbolWatcher(interval, c.config.RestURL, c.logger, c.onSymbolsChanged)
 	return watcher.Run(ctx)
 }
 
@@ -82,7 +82,7 @@ func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.W
 	)
 
 	for i, chunk := range chunks {
-		conn := NewConnection(i, chunk, c.logger, c, c.config.MaxWait, c.stats)
+		conn := NewConnection(i, chunk, c.config.WSURL, c.logger, c, c.config.MaxWait, c.stats)
 		wg.Add(1)
 		go func(conn *Connection) {
 			defer wg.Done()

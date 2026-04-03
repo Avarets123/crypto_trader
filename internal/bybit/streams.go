@@ -3,8 +3,6 @@ package bybit
 const (
 	// MaxSymbolsPerConn — лимит Bybit: не более 10 топиков на соединение.
 	MaxSymbolsPerConn = 10
-
-	wsEndpoint = "wss://stream.bybit.com/v5/public/spot"
 )
 
 // ChunkSymbols разбивает срез символов на группы заданного размера.

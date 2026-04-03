@@ -22,13 +22,12 @@ func ChunkSymbols(symbols []string, chunkSize int) [][]string {
 }
 
 // BuildStreamURL формирует URL комбинированного стрима для группы символов.
-// Пример: wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@miniTicker/...
-func BuildStreamURL(symbols []string) string {
-	parts := make([]string, 0, len(symbols)*2)
+// Пример: wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker/...
+func BuildStreamURL(wsBaseURL string, symbols []string) string {
+	parts := make([]string, 0, len(symbols))
 	for _, s := range symbols {
-		lower := strings.ToLower(s)
 		// parts = append(parts, lower+"@trade", lower+"@miniTicker")
-		parts = append(parts, lower+"@miniTicker")
+		parts = append(parts, strings.ToLower(s)+"@miniTicker")
 	}
-	return "wss://stream.binance.com:9443/stream?streams=" + strings.Join(parts, "/")
+	return wsBaseURL + "/stream?streams=" + strings.Join(parts, "/")
 }

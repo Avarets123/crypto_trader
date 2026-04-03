@@ -1,40 +1,28 @@
 package binance
 
 import (
-	"os"
-	"strconv"
-	"time"
+	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 )
 
-// Config содержит настройки binance-ws клиента.
+// Config содержит настройки binance ws-клиента.
 type Config struct {
-	LogLevel         string
-	MaxWait          time.Duration
-	SymbolRefreshMin int
+	sharedconfig.Base
+	WSURL   string
+	RestURL string
 }
 
 // LoadConfig читает конфиг из переменных окружения с fallback на дефолты.
 func LoadConfig() *Config {
-	maxWaitSec := getEnvInt("RECONNECT_MAX_WAIT", 60)
+	base := sharedconfig.LoadBase()
+	wsURL := "wss://stream.binance.com:9443"
+	restURL := "https://api.binance.com"
+	if base.DevMode {
+		wsURL = "wss://testnet.binance.vision"
+		restURL = "https://testnet.binance.vision"
+	}
 	return &Config{
-		LogLevel:         getEnv("LOG_LEVEL", "info"),
-		MaxWait:          time.Duration(maxWaitSec) * time.Second,
-		SymbolRefreshMin: getEnvInt("SYMBOL_REFRESH_MIN", 30),
+		Base:    base,
+		WSURL:   wsURL,
+		RestURL: restURL,
 	}
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
 }
