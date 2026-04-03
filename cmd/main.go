@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/binance"
@@ -18,13 +19,16 @@ import (
 	"github.com/osman/bot-traider/internal/ticker"
 )
 
+
 func main() {
+	godotenv.Load()
+
 	cfg := sharedconfig.LoadBase()
+	log := logger.New(cfg.LogLevel)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	log := logger.New(cfg.LogLevel)
 	defer log.Sync() //nolint:errcheck
 	
 	pool, err := db.NewPool(ctx, cfg.PostgresDSN)
