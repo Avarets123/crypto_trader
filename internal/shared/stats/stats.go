@@ -18,11 +18,13 @@ type ExchangeStats struct {
 // Stats агрегирует статистику по всем биржам.
 type Stats struct {
 	exchanges map[string]*ExchangeStats
+	startedAt time.Time
 }
 
 // New создаёт Stats с прединициализированными записями для каждой биржи.
-func New(ctx context.Context,log *zap.Logger) *Stats {
+func New(ctx context.Context, log *zap.Logger) *Stats {
 	st := &Stats{
+		startedAt: time.Now(),
 		exchanges: map[string]*ExchangeStats{
 			"binance": {},
 			"gateio":  {},
@@ -31,7 +33,7 @@ func New(ctx context.Context,log *zap.Logger) *Stats {
 		},
 	}
 
-	st.LogPeriodically(ctx, time.Second*10, log,)
+	st.LogPeriodically(ctx, time.Second*10, log)
 
 	return st
 }
@@ -46,7 +48,7 @@ func (s *Stats) Record(exchange string, dataSize int) {
 	atomic.AddUint64(&e.bytes, uint64(dataSize))
 }
 
-// LogPeriodically запускает горутину, которая каждые interval логирует и сбрасывает счётчики.
+// LogPeriodically запускает горутину, которая каждые interval логирует счётчики.
 func (s *Stats) LogPeriodically(ctx context.Context, interval time.Duration, log *zap.Logger) {
 	go func() {
 		t := time.NewTicker(interval)
@@ -56,14 +58,26 @@ func (s *Stats) LogPeriodically(ctx context.Context, interval time.Duration, log
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				uptime := formatUptime(time.Since(s.startedAt))
 				for name, e := range s.exchanges {
 					log.Info("stats",
 						zap.String("exchange", name),
 						zap.Uint64("updates", e.updates),
-						zap.String("mb", fmt.Sprintf("%.3f",float64(e.bytes)/1_048_576)),
+						zap.String("mb", fmt.Sprintf("%.3f", float64(e.bytes)/1_048_576)),
+						zap.String("uptime", uptime),
 					)
 				}
 			}
 		}
 	}()
+}
+
+// formatUptime форматирует длительность в виде "5d 3h 12m 23s".
+func formatUptime(d time.Duration) string {
+	d = d.Truncate(time.Second)
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dd %dh %dm %ds", days, hours, minutes, seconds)
 }
