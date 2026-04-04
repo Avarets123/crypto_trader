@@ -1,6 +1,6 @@
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS spread_events (
+CREATE TABLE IF NOT EXISTS spreads (
     id             BIGSERIAL       PRIMARY KEY,
     symbol         VARCHAR(20)     NOT NULL,
     exchange_high  VARCHAR(20)     NOT NULL,
@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS spread_events (
     price_low      DECIMAL(20, 8)  NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_spread_events_symbol     ON spread_events (symbol, opened_at DESC);
-CREATE INDEX IF NOT EXISTS idx_spread_events_active     ON spread_events (closed_at) WHERE closed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_spreads_symbol     ON spreads (symbol, opened_at DESC);
+CREATE INDEX IF NOT EXISTS idx_spreads_active     ON spreads (closed_at) WHERE closed_at IS NULL;
 
 COMMIT;
