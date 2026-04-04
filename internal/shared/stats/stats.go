@@ -17,9 +17,11 @@ type ExchangeStats struct {
 
 // Stats агрегирует статистику по всем биржам.
 type Stats struct {
-	exchanges       map[string]*ExchangeStats
-	startedAt       time.Time
-	spreadsDetected uint64
+	exchanges        map[string]*ExchangeStats
+	startedAt        time.Time
+	spreadsDetected  uint64
+	pumpsDetected    uint64
+	crashesDetected  uint64
 }
 
 // New создаёт Stats с прединициализированными записями для каждой биржи.
@@ -34,7 +36,7 @@ func New(ctx context.Context, log *zap.Logger) *Stats {
 		},
 	}
 
-	st.LogPeriodically(ctx, time.Second*10, log)
+	st.LogPeriodically(ctx, time.Second*15, log)
 
 	return st
 }
@@ -42,6 +44,16 @@ func New(ctx context.Context, log *zap.Logger) *Stats {
 // RecordSpread атомарно увеличивает счётчик обнаруженных спредов.
 func (s *Stats) RecordSpread() {
 	atomic.AddUint64(&s.spreadsDetected, 1)
+}
+
+// RecordPump атомарно увеличивает счётчик обнаруженных pump-событий.
+func (s *Stats) RecordPump() {
+	atomic.AddUint64(&s.pumpsDetected, 1)
+}
+
+// RecordCrash атомарно увеличивает счётчик обнаруженных flash crash-событий.
+func (s *Stats) RecordCrash() {
+	atomic.AddUint64(&s.crashesDetected, 1)
 }
 
 // Record атомарно увеличивает счётчики для указанной биржи.
@@ -68,6 +80,8 @@ func (s *Stats) LogPeriodically(ctx context.Context, interval time.Duration, log
 				log.Info("uptime",
 					zap.String("Runned time", uptime),
 					zap.Uint64("spreads_detected", atomic.LoadUint64(&s.spreadsDetected)),
+					zap.Uint64("pumps_detected", atomic.LoadUint64(&s.pumpsDetected)),
+					zap.Uint64("crashes_detected", atomic.LoadUint64(&s.crashesDetected)),
 				)
 				for name, e := range s.exchanges {
 					log.Info("stats",

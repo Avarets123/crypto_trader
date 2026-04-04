@@ -17,6 +17,7 @@ import (
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/comparator"
 	"github.com/osman/bot-traider/internal/shared/db"
+	"github.com/osman/bot-traider/internal/shared/detector"
 	"github.com/osman/bot-traider/internal/shared/logger"
 	"github.com/osman/bot-traider/internal/shared/stats"
 	"github.com/osman/bot-traider/internal/ticker"
@@ -58,6 +59,12 @@ func main() {
 	cmp := comparator.New(ctx, cfg.SpreadThresholdPct, spreadRepo, log.With(zap.String("component", "comparator")))
 	cmp.WithOnSpreadOpen(st.RecordSpread)
 	tickerService.WithOnSend(cmp.Update)
+
+	detectorRepo := detector.NewDetectorRepository(pool, log.With(zap.String("component", "detector")))
+	det := detector.New(ctx, detector.LoadConfig(), detectorRepo, log.With(zap.String("component", "detector")))
+	det.WithOnPump(st.RecordPump)
+	det.WithOnCrash(st.RecordCrash)
+	tickerService.WithOnSend(det.Update)
 
 	bybitClient := bybit.NewClient(bybit.LoadConfig(), log.With(zap.String("market", "bybit")), st, tickerService)
 	go func() {

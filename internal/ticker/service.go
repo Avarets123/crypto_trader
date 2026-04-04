@@ -15,7 +15,7 @@ type TickerService struct {
 	ch       chan Ticker
 	size     int
 	interval time.Duration
-	onSend   func(Ticker)
+	onSend   []func(Ticker)
 }
 
 func NewService(ctx context.Context, repo *TickerRepository, log *zap.Logger, cfg Config) *TickerService {
@@ -33,17 +33,17 @@ func NewService(ctx context.Context, repo *TickerRepository, log *zap.Logger, cf
 	return service
 }
 
-// WithOnSend устанавливает хук, вызываемый после каждого успешно отправленного тикера.
+// WithOnSend добавляет хук, вызываемый после каждого успешно отправленного тикера.
 func (s *TickerService) WithOnSend(fn func(Ticker)) {
-	s.onSend = fn
+	s.onSend = append(s.onSend, fn)
 }
 
 // Send отправляет тикер в канал. Неблокирующий: при переполнении — дропает.
 func (s *TickerService) Send(t Ticker) {
 	select {
 	case s.ch <- t:
-		if s.onSend != nil {
-			s.onSend(t)
+		for _, fn := range s.onSend {
+			fn(t)
 		}
 	default:
 		s.log.Warn("storage: channel full, ticker dropped", zap.String("symbol", t.Symbol))
