@@ -30,7 +30,7 @@ func LoadBase() Base {
 		SymbolRefreshMin:   GetEnvInt("SYMBOL_REFRESH_MIN", 30),
 		DevMode:            GetEnv("DEV_MODE", "false") == "true",
 		PostgresDSN:        postgresDSN,
-		SpreadThresholdPct: GetEnvFloat("SPREAD_THRESHOLD_PCT", 5.0),
+		SpreadThresholdPct: GetEnvFloat("SPREAD_THRESHOLD_PCT", 2.0),
 	}
 }
 

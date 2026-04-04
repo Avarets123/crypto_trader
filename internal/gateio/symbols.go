@@ -94,15 +94,10 @@ func (w *SymbolWatcher) Run(ctx context.Context) error {
 
 // refresh получает символы и сравнивает с текущим списком.
 func (w *SymbolWatcher) refresh(ctx context.Context) error {
-	usdt, err := fetchSymbolsByQuote(ctx, w.restURL, "USDT")
+	symbols, err := fetchSymbolsByQuote(ctx, w.restURL, "USDT")
 	if err != nil {
 		return err
 	}
-	btc, err := fetchSymbolsByQuote(ctx, w.restURL, "BTC")
-	if err != nil {
-		return err
-	}
-	symbols := mergeSymbols(usdt, btc)
 
 	w.mu.Lock()
 	old := w.current
@@ -130,21 +125,6 @@ func (w *SymbolWatcher) refresh(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// mergeSymbols объединяет несколько срезов символов без дубликатов.
-func mergeSymbols(slices ...[]string) []string {
-	seen := make(map[string]struct{})
-	var result []string
-	for _, s := range slices {
-		for _, sym := range s {
-			if _, ok := seen[sym]; !ok {
-				seen[sym] = struct{}{}
-				result = append(result, sym)
-			}
-		}
-	}
-	return result
 }
 
 // compareSymbols возвращает добавленные и удалённые символы через map для O(n) сравнения.
