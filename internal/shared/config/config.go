@@ -9,11 +9,12 @@ import (
 
 // Base — общие настройки для всех бирж.
 type Base struct {
-	LogLevel         string
-	MaxWait          time.Duration
-	SymbolRefreshMin int
-	DevMode          bool
-	PostgresDSN string
+	LogLevel            string
+	MaxWait             time.Duration
+	SymbolRefreshMin    int
+	DevMode             bool
+	PostgresDSN         string
+	SpreadThresholdPct  float64
 }
 
 // LoadBase читает общий конфиг из переменных окружения.
@@ -24,11 +25,12 @@ func LoadBase() Base {
 		log.Fatal("POSTGRES_DSN not passed!")
 	}
 	return Base{
-		LogLevel:         GetEnv("LOG_LEVEL", "info"),
-		MaxWait:          time.Duration(maxWaitSec) * time.Second,
-		SymbolRefreshMin: GetEnvInt("SYMBOL_REFRESH_MIN", 30),
-		DevMode:          GetEnv("DEV_MODE", "false") == "true",
-		PostgresDSN: postgresDSN,
+		LogLevel:           GetEnv("LOG_LEVEL", "info"),
+		MaxWait:            time.Duration(maxWaitSec) * time.Second,
+		SymbolRefreshMin:   GetEnvInt("SYMBOL_REFRESH_MIN", 30),
+		DevMode:            GetEnv("DEV_MODE", "false") == "true",
+		PostgresDSN:        postgresDSN,
+		SpreadThresholdPct: GetEnvFloat("SPREAD_THRESHOLD_PCT", 1.0),
 	}
 }
 
@@ -45,6 +47,16 @@ func GetEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+// GetEnvFloat возвращает float64-значение переменной окружения или fallback.
+func GetEnvFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return fallback

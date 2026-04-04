@@ -15,6 +15,7 @@ import (
 	"github.com/osman/bot-traider/internal/gateio"
 	"github.com/osman/bot-traider/internal/okx"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
+	"github.com/osman/bot-traider/internal/shared/comparator"
 	"github.com/osman/bot-traider/internal/shared/db"
 	"github.com/osman/bot-traider/internal/shared/logger"
 	"github.com/osman/bot-traider/internal/shared/stats"
@@ -48,11 +49,13 @@ func main() {
 	}()
 
 	st := stats.New(ctx, log)
-	
+
 	repo := ticker.NewRepository(pool, log)
 	tickerService := ticker.NewService(ctx, repo, log, ticker.LoadConfig())
 	log.Info("storage service started")
 
+	cmp := comparator.New(cfg.SpreadThresholdPct, log.With(zap.String("component", "comparator")))
+	tickerService.WithOnSend(cmp.Update)
 
 	bybitClient := bybit.NewClient(bybit.LoadConfig(), log.With(zap.String("market", "bybit")), st, tickerService)
 	go func() {
