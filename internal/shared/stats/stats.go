@@ -59,6 +59,7 @@ func (s *Stats) LogPeriodically(ctx context.Context, interval time.Duration, log
 				return
 			case <-t.C:
 				uptime := formatUptime(time.Since(s.startedAt))
+				log.Info("uptime", zap.String("Runned time", uptime))
 				for name, e := range s.exchanges {
 					log.Info("stats",
 						zap.String("exchange", name),

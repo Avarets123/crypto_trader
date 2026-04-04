@@ -147,7 +147,6 @@ func (c *Connection) handleMessage(raw []byte) {
 		return
 	}
 
-	changePct := calcChangePct(result.OpenPrice, result.Last)
 	c.lastPrice[result.CurrencyPair] = result.Last
 	c.stats.Record("gateio", len(raw))
 	c.handler.OnTicker(ticker.Ticker{
@@ -159,7 +158,7 @@ func (c *Connection) handleMessage(raw []byte) {
 		High24h:   result.HighPrice,
 		Low24h:    result.LowPrice,
 		Volume24h: result.BaseVolume,
-		ChangePct: changePct,
+		ChangePct: formatChangePct(result.ChangePercentage),
 		CreatedAt: time.Now(),
 	})
 }
@@ -172,17 +171,12 @@ func quoteFromSymbol(symbol string) string {
 	return symbol
 }
 
-// calcChangePct вычисляет процентное изменение цены относительно открытия.
-func calcChangePct(open, last string) string {
-	var o, l float64
-	fmt.Sscanf(open, "%f", &o)
-	fmt.Sscanf(last, "%f", &l)
-	if o == 0 {
-		return "0.00%"
+// formatChangePct форматирует change_percentage от Gate.io в строку вида +1.23% / -0.45%.
+func formatChangePct(s string) string {
+	var v float64
+	fmt.Sscanf(s, "%f", &v)
+	if v >= 0 {
+		return fmt.Sprintf("+%.2f%%", v)
 	}
-	pct := (l - o) / o * 100
-	if pct >= 0 {
-		return fmt.Sprintf("+%.2f%%", pct)
-	}
-	return fmt.Sprintf("%.2f%%", pct)
+	return fmt.Sprintf("%.2f%%", v)
 }
