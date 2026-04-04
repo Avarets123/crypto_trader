@@ -1,6 +1,7 @@
 package comparator
 
 import (
+	"context"
 	"testing"
 
 	"go.uber.org/zap"
@@ -12,7 +13,7 @@ import (
 func newTestComparator(threshold float64) (*PriceComparator, *observer.ObservedLogs) {
 	core, logs := observer.New(zap.WarnLevel)
 	log := zap.New(core)
-	return New(threshold, log), logs
+	return New(context.Background(), threshold, nil, log), logs
 }
 
 func TestCheckSpread_TriggersWhenAboveThreshold(t *testing.T) {
@@ -25,7 +26,7 @@ func TestCheckSpread_TriggersWhenAboveThreshold(t *testing.T) {
 		t.Fatal("expected warn log, got none")
 	}
 	entry := logs.All()[0]
-	if entry.Message != "price spread detected" {
+	if entry.Message != "spread opened" {
 		t.Fatalf("unexpected message: %s", entry.Message)
 	}
 }

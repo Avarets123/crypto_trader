@@ -54,7 +54,8 @@ func main() {
 	tickerService := ticker.NewService(ctx, repo, log, ticker.LoadConfig())
 	log.Info("storage service started")
 
-	cmp := comparator.New(cfg.SpreadThresholdPct, log.With(zap.String("component", "comparator")))
+	spreadRepo := comparator.NewSpreadRepository(pool, log.With(zap.String("component", "comparator")))
+	cmp := comparator.New(ctx, cfg.SpreadThresholdPct, spreadRepo, log.With(zap.String("component", "comparator")))
 	tickerService.WithOnSend(cmp.Update)
 
 	bybitClient := bybit.NewClient(bybit.LoadConfig(), log.With(zap.String("market", "bybit")), st, tickerService)
