@@ -1,0 +1,5 @@
+BEGIN;
+
+ALTER TABLE spreads ALTER COLUMN max_spread_pct TYPE DECIMAL(12, 4);
+
+COMMIT;
