@@ -39,13 +39,19 @@ type symbolPrices struct {
 
 // PriceComparator отслеживает цены символов по биржам и логирует межбиржевой спред.
 type PriceComparator struct {
-	mu        sync.RWMutex
-	symbols   map[string]*symbolPrices
-	threshold float64
-	log       *zap.Logger
-	repo      *SpreadRepository
-	ctx       context.Context
-	events    chan spreadAction
+	mu            sync.RWMutex
+	symbols       map[string]*symbolPrices
+	threshold     float64
+	log           *zap.Logger
+	repo          *SpreadRepository
+	ctx           context.Context
+	events        chan spreadAction
+	onSpreadOpen  func()
+}
+
+// WithOnSpreadOpen устанавливает хук, вызываемый при каждом новом обнаруженном спреде.
+func (c *PriceComparator) WithOnSpreadOpen(fn func()) {
+	c.onSpreadOpen = fn
 }
 
 // New создаёт PriceComparator с заданным порогом спреда в процентах.
@@ -197,6 +203,9 @@ func (c *PriceComparator) checkSpread(sp *symbolPrices, symbol string, prices ma
 						zap.Float64("price_low", pLow),
 						zap.Float64("spread_pct", absSpread),
 					)
+					if c.onSpreadOpen != nil {
+						c.onSpreadOpen()
+					}
 					if c.events != nil {
 						c.enqueue(spreadAction{kind: actionOpen, event: event})
 					}

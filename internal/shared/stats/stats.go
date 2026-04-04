@@ -17,8 +17,9 @@ type ExchangeStats struct {
 
 // Stats агрегирует статистику по всем биржам.
 type Stats struct {
-	exchanges map[string]*ExchangeStats
-	startedAt time.Time
+	exchanges       map[string]*ExchangeStats
+	startedAt       time.Time
+	spreadsDetected uint64
 }
 
 // New создаёт Stats с прединициализированными записями для каждой биржи.
@@ -36,6 +37,11 @@ func New(ctx context.Context, log *zap.Logger) *Stats {
 	st.LogPeriodically(ctx, time.Second*10, log)
 
 	return st
+}
+
+// RecordSpread атомарно увеличивает счётчик обнаруженных спредов.
+func (s *Stats) RecordSpread() {
+	atomic.AddUint64(&s.spreadsDetected, 1)
 }
 
 // Record атомарно увеличивает счётчики для указанной биржи.
@@ -59,7 +65,10 @@ func (s *Stats) LogPeriodically(ctx context.Context, interval time.Duration, log
 				return
 			case <-t.C:
 				uptime := formatUptime(time.Since(s.startedAt))
-				log.Info("uptime", zap.String("Runned time", uptime))
+				log.Info("uptime",
+					zap.String("Runned time", uptime),
+					zap.Uint64("spreads_detected", atomic.LoadUint64(&s.spreadsDetected)),
+				)
 				for name, e := range s.exchanges {
 					log.Info("stats",
 						zap.String("exchange", name),

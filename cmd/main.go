@@ -56,6 +56,7 @@ func main() {
 
 	spreadRepo := comparator.NewSpreadRepository(pool, log.With(zap.String("component", "comparator")))
 	cmp := comparator.New(ctx, cfg.SpreadThresholdPct, spreadRepo, log.With(zap.String("component", "comparator")))
+	cmp.WithOnSpreadOpen(st.RecordSpread)
 	tickerService.WithOnSend(cmp.Update)
 
 	bybitClient := bybit.NewClient(bybit.LoadConfig(), log.With(zap.String("market", "bybit")), st, tickerService)
