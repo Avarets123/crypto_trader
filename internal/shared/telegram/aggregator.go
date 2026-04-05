@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/osman/bot-traider/internal/shared/comparator"
+	"github.com/osman/bot-traider/internal/shared/detector"
 )
 
 // EventType — тип агрегируемого события.
@@ -21,36 +24,71 @@ const (
 
 // Event — одно событие для агрегации.
 type Event struct {
-	Type       EventType
-	Symbol     string
-	Exchange   string // для spread: биржа с высокой ценой
-	Exchange2  string // для spread: биржа с низкой ценой
-	ChangePct  float64
-	WindowSec  int
+	Type      EventType
+	Symbol    string
+	Exchange  string // для spread: биржа с высокой ценой
+	Exchange2 string // для spread: биржа с низкой ценой
+	ChangePct float64
+	WindowSec int
 }
 
 // Aggregator собирает события за окно времени и отправляет одно сводное сообщение.
 type Aggregator struct {
-	mu         sync.Mutex
-	notifier   *Notifier
-	windowDur  time.Duration
-	buf        []Event
-	timer      *time.Timer
-	log        *zap.Logger
+	mu        sync.Mutex
+	ctx       context.Context
+	notifier  *Notifier
+	windowDur time.Duration
+	buf       []Event
+	timer     *time.Timer
+	log       *zap.Logger
 }
 
 // NewAggregator создаёт Aggregator с заданным окном агрегации.
-func NewAggregator(n *Notifier, windowSec int, log *zap.Logger) *Aggregator {
+func NewAggregator(ctx context.Context, n *Notifier, windowSec int, log *zap.Logger) *Aggregator {
 	log.Info("telegram aggregator created", zap.Int("window_sec", windowSec))
 	return &Aggregator{
+		ctx:       ctx,
 		notifier:  n,
 		windowDur: time.Duration(windowSec) * time.Second,
 		log:       log,
 	}
 }
 
-// Add добавляет событие в буфер. Если буфер был пустой — запускает таймер окна.
-func (a *Aggregator) Add(ctx context.Context, e Event) {
+// OnPumpEvent — хук для detector.WithOnPumpEvent.
+func (a *Aggregator) OnPumpEvent(e *detector.DetectorEvent) {
+	a.add(Event{
+		Type:      EventPump,
+		Symbol:    e.Symbol,
+		Exchange:  e.Exchange,
+		ChangePct: e.ChangePct,
+		WindowSec: e.WindowSec,
+	})
+}
+
+// OnCrashEvent — хук для detector.WithOnCrashEvent.
+func (a *Aggregator) OnCrashEvent(e *detector.DetectorEvent) {
+	a.add(Event{
+		Type:      EventCrash,
+		Symbol:    e.Symbol,
+		Exchange:  e.Exchange,
+		ChangePct: e.ChangePct,
+		WindowSec: e.WindowSec,
+	})
+}
+
+// OnSpreadOpenEvent — хук для comparator.WithOnSpreadOpenEvent.
+func (a *Aggregator) OnSpreadOpenEvent(e *comparator.SpreadEvent) {
+	a.add(Event{
+		Type:      EventSpread,
+		Symbol:    e.Symbol,
+		Exchange:  e.ExchangeHigh,
+		Exchange2: e.ExchangeLow,
+		ChangePct: e.MaxSpreadPct,
+	})
+}
+
+// add добавляет событие в буфер. Если буфер был пустой — запускает таймер окна.
+func (a *Aggregator) add(e Event) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -66,14 +104,12 @@ func (a *Aggregator) Add(ctx context.Context, e Event) {
 	// таймер запускается только при первом событии в окне
 	if len(a.buf) == 1 {
 		a.log.Debug("aggregator: window started", zap.Duration("window", a.windowDur))
-		a.timer = time.AfterFunc(a.windowDur, func() {
-			a.flush(ctx)
-		})
+		a.timer = time.AfterFunc(a.windowDur, a.flush)
 	}
 }
 
 // flush отправляет накопленные события и сбрасывает буфер.
-func (a *Aggregator) flush(ctx context.Context) {
+func (a *Aggregator) flush() {
 	a.mu.Lock()
 	events := a.buf
 	a.buf = nil
@@ -85,9 +121,7 @@ func (a *Aggregator) flush(ctx context.Context) {
 	}
 
 	a.log.Info("aggregator: flushing events", zap.Int("count", len(events)))
-
-	msg := formatSummary(events)
-	a.notifier.Send(ctx, msg)
+	a.notifier.Send(a.ctx, formatSummary(events))
 }
 
 // formatSummary формирует сводное сообщение по всем накопленным событиям.

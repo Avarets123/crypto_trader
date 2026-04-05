@@ -55,6 +55,7 @@ func main() {
 		log.With(zap.String("component", "telegram")),
 	)
 	tgAgg := telegram.NewAggregator(
+		ctx,
 		tg,
 		sharedconfig.GetEnvInt("TELEGRAM_AGGREGATE_SEC", 30),
 		log.With(zap.String("component", "telegram")),
@@ -69,39 +70,15 @@ func main() {
 	spreadRepo := comparator.NewSpreadRepository(pool, log.With(zap.String("component", "comparator")))
 	cmp := comparator.New(ctx, cfg.SpreadThresholdPct, spreadRepo, log.With(zap.String("component", "comparator")))
 	cmp.WithOnSpreadOpen(st.RecordSpread)
-	cmp.WithOnSpreadOpenEvent(func(e *comparator.SpreadEvent) {
-		tgAgg.Add(ctx, telegram.Event{
-			Type:      telegram.EventSpread,
-			Symbol:    e.Symbol,
-			Exchange:  e.ExchangeHigh,
-			Exchange2: e.ExchangeLow,
-			ChangePct: e.MaxSpreadPct,
-		})
-	})
+	cmp.WithOnSpreadOpenEvent(tgAgg.OnSpreadOpenEvent)
 	tickerService.WithOnSend(cmp.Update)
 
 	detectorRepo := detector.NewDetectorRepository(pool, log.With(zap.String("component", "detector")))
 	det := detector.New(ctx, detector.LoadConfig(), detectorRepo, log.With(zap.String("component", "detector")))
 	det.WithOnPump(st.RecordPump)
 	det.WithOnCrash(st.RecordCrash)
-	det.WithOnPumpEvent(func(e *detector.DetectorEvent) {
-		tgAgg.Add(ctx, telegram.Event{
-			Type:      telegram.EventPump,
-			Symbol:    e.Symbol,
-			Exchange:  e.Exchange,
-			ChangePct: e.ChangePct,
-			WindowSec: e.WindowSec,
-		})
-	})
-	det.WithOnCrashEvent(func(e *detector.DetectorEvent) {
-		tgAgg.Add(ctx, telegram.Event{
-			Type:      telegram.EventCrash,
-			Symbol:    e.Symbol,
-			Exchange:  e.Exchange,
-			ChangePct: e.ChangePct,
-			WindowSec: e.WindowSec,
-		})
-	})
+	det.WithOnPumpEvent(tgAgg.OnPumpEvent)
+	det.WithOnCrashEvent(tgAgg.OnCrashEvent)
 	tickerService.WithOnSend(det.Update)
 
 	bybitCfg := bybit.LoadConfig()
