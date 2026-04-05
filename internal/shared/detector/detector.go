@@ -169,14 +169,15 @@ func (d *Detector) Update(t ticker.Ticker) {
 
 	if changePct >= d.pumpThreshold {
 		e := &DetectorEvent{
-			Type:        "pump",
-			Symbol:      t.Symbol,
-			Exchange:    t.Exchange,
-			DetectedAt:  now,
-			WindowSec:   d.windowSec,
-			PriceBefore: priceBefore,
-			PriceNow:    price,
-			ChangePct:   changePct,
+			Type:            "pump",
+			Symbol:          t.Symbol,
+			Exchange:        t.Exchange,
+			DetectedAt:      now,
+			WindowSec:       d.windowSec,
+			PriceBefore:     priceBefore,
+			PriceNow:        price,
+			ChangePct:       changePct,
+			TickerChangePct: t.ChangePct,
 		}
 		d.log.Warn("pump detected",
 			zap.String("symbol", t.Symbol),
@@ -197,14 +198,15 @@ func (d *Detector) Update(t ticker.Ticker) {
 		}
 	} else if changePct <= -d.crashThreshold {
 		e := &DetectorEvent{
-			Type:        "crash",
-			Symbol:      t.Symbol,
-			Exchange:    t.Exchange,
-			DetectedAt:  now,
-			WindowSec:   d.windowSec,
-			PriceBefore: priceBefore,
-			PriceNow:    price,
-			ChangePct:   changePct,
+			Type:            "crash",
+			Symbol:          t.Symbol,
+			Exchange:        t.Exchange,
+			DetectedAt:      now,
+			WindowSec:       d.windowSec,
+			PriceBefore:     priceBefore,
+			PriceNow:        price,
+			ChangePct:       changePct,
+			TickerChangePct: t.ChangePct,
 		}
 		d.log.Warn("flash crash detected",
 			zap.String("symbol", t.Symbol),

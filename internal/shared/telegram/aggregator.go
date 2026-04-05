@@ -24,12 +24,13 @@ const (
 
 // Event — одно событие для агрегации.
 type Event struct {
-	Type      EventType
-	Symbol    string
-	Exchange  string // для spread: биржа с высокой ценой
-	Exchange2 string // для spread: биржа с низкой ценой
-	ChangePct float64
-	WindowSec int
+	Type            EventType
+	Symbol          string
+	Exchange        string // для spread: биржа с высокой ценой
+	Exchange2       string // для spread: биржа с низкой ценой
+	ChangePct       float64
+	WindowSec       int
+	TickerChangePct string // изменение за 24ч от биржи (строка)
 }
 
 // Aggregator собирает события за окно времени и отправляет одно сводное сообщение.
@@ -57,22 +58,24 @@ func NewAggregator(ctx context.Context, n *Notifier, windowSec int, log *zap.Log
 // OnPumpEvent — хук для detector.WithOnPumpEvent.
 func (a *Aggregator) OnPumpEvent(e *detector.DetectorEvent) {
 	a.add(Event{
-		Type:      EventPump,
-		Symbol:    e.Symbol,
-		Exchange:  e.Exchange,
-		ChangePct: e.ChangePct,
-		WindowSec: e.WindowSec,
+		Type:            EventPump,
+		Symbol:          e.Symbol,
+		Exchange:        e.Exchange,
+		ChangePct:       e.ChangePct,
+		WindowSec:       e.WindowSec,
+		TickerChangePct: e.TickerChangePct,
 	})
 }
 
 // OnCrashEvent — хук для detector.WithOnCrashEvent.
 func (a *Aggregator) OnCrashEvent(e *detector.DetectorEvent) {
 	a.add(Event{
-		Type:      EventCrash,
-		Symbol:    e.Symbol,
-		Exchange:  e.Exchange,
-		ChangePct: e.ChangePct,
-		WindowSec: e.WindowSec,
+		Type:            EventCrash,
+		Symbol:          e.Symbol,
+		Exchange:        e.Exchange,
+		ChangePct:       e.ChangePct,
+		WindowSec:       e.WindowSec,
+		TickerChangePct: e.TickerChangePct,
 	})
 }
 
@@ -151,16 +154,24 @@ func formatSummary(events []Event) string {
 	if len(pumps) > 0 {
 		sb.WriteString(fmt.Sprintf("\n🚀 <b>PUMP</b> (%d):\n", len(pumps)))
 		for _, e := range pumps {
-			sb.WriteString(fmt.Sprintf("  • %s | %s  <b>+%.2f%%</b> за %dс\n",
-				e.Symbol, e.Exchange, e.ChangePct, e.WindowSec))
+			line := fmt.Sprintf("  • %s | %s  <b>+%.2f%%</b> за %dс",
+				e.Symbol, e.Exchange, e.ChangePct, e.WindowSec)
+			if e.TickerChangePct != "" {
+				line += fmt.Sprintf("  (24ч: %s)", e.TickerChangePct)
+			}
+			sb.WriteString(line + "\n")
 		}
 	}
 
 	if len(crashes) > 0 {
 		sb.WriteString(fmt.Sprintf("\n💥 <b>CRASH</b> (%d):\n", len(crashes)))
 		for _, e := range crashes {
-			sb.WriteString(fmt.Sprintf("  • %s | %s  <b>%.2f%%</b> за %dс\n",
-				e.Symbol, e.Exchange, e.ChangePct, e.WindowSec))
+			line := fmt.Sprintf("  • %s | %s  <b>%.2f%%</b> за %dс",
+				e.Symbol, e.Exchange, e.ChangePct, e.WindowSec)
+			if e.TickerChangePct != "" {
+				line += fmt.Sprintf("  (24ч: %s)", e.TickerChangePct)
+			}
+			sb.WriteString(line + "\n")
 		}
 	}
 
