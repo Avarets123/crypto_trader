@@ -124,10 +124,25 @@ func (a *Aggregator) flush() {
 	a.notifier.Send(a.ctx, formatSummary(events))
 }
 
+// deduplicateBySymbol оставляет для каждого symbol|exchange только последнее событие.
+func deduplicateBySymbol(events []Event) []Event {
+	seen := make(map[string]int) // key → последний индекс
+	for i, e := range events {
+		seen[e.Symbol+"|"+e.Exchange] = i
+	}
+	out := make([]Event, 0, len(seen))
+	for i, e := range events {
+		if seen[e.Symbol+"|"+e.Exchange] == i {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // formatSummary формирует сводное сообщение по всем накопленным событиям.
 func formatSummary(events []Event) string {
-	pumps := filterEvents(events, EventPump)
-	crashes := filterEvents(events, EventCrash)
+	pumps := deduplicateBySymbol(filterEvents(events, EventPump))
+	crashes := deduplicateBySymbol(filterEvents(events, EventCrash))
 	spreads := filterEvents(events, EventSpread)
 
 	var sb strings.Builder
