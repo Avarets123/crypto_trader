@@ -26,7 +26,7 @@ type topicMessage struct {
 type TickerData struct {
 	Symbol       string `json:"symbol"`
 	LastPrice    string `json:"lastPrice"`
-	OpenPrice    string `json:"openPrice"`
+	OpenPrice    string `json:"prevPrice24h"` // Bybit V5 шлёт prevPrice24h, не openPrice
 	HighPrice24h string `json:"highPrice24h"`
 	LowPrice24h  string `json:"lowPrice24h"`
 	Volume24h    string `json:"volume24h"`
