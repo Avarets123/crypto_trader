@@ -28,6 +28,7 @@ type Connection struct {
 	handler   EventHandler
 	maxWait   time.Duration
 	lastPrice map[string]string
+	openPrice map[string]string // кешируем openPrice из snapshot для дельта-обновлений
 	stats     *stats.Stats
 }
 
@@ -41,6 +42,7 @@ func NewConnection(id int, symbols []string, wsURL string, log *zap.Logger, h Ev
 		handler:   h,
 		maxWait:   maxWait,
 		lastPrice: make(map[string]string),
+		openPrice: make(map[string]string),
 		stats:     st,
 	}
 }
@@ -149,22 +151,34 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 		return fmt.Errorf("unmarshal ticker data: %w", err)
 	}
 
+	// Обновляем кеш openPrice при наличии в сообщении (только в snapshot).
+	if data.OpenPrice != "" {
+		c.openPrice[data.Symbol] = data.OpenPrice
+	}
+
 	if c.lastPrice[data.Symbol] == data.LastPrice {
 		return nil
 	}
 
 	c.lastPrice[data.Symbol] = data.LastPrice
+
+	// Используем кешированный openPrice, если дельта его не прислала.
+	openPrice := data.OpenPrice
+	if openPrice == "" {
+		openPrice = c.openPrice[data.Symbol]
+	}
+
 	c.stats.Record("bybit", len(raw))
 	c.handler.OnTicker(ticker.Ticker{
 		Exchange:  "bybit",
 		Symbol:    data.Symbol,
 		Quote:     quoteFromSymbol(data.Symbol),
 		Price:     data.LastPrice,
-		Open24h:   data.OpenPrice,
+		Open24h:   openPrice,
 		High24h:   data.HighPrice24h,
 		Low24h:    data.LowPrice24h,
 		Volume24h: data.Volume24h,
-		ChangePct: calcChangePct(data.OpenPrice, data.LastPrice),
+		ChangePct: calcChangePct(openPrice, data.LastPrice),
 		CreatedAt: time.Now(),
 	})
 	return nil
