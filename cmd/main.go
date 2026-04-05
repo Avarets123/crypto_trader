@@ -13,8 +13,8 @@ import (
 	"github.com/osman/bot-traider/internal/binance"
 	"github.com/osman/bot-traider/internal/bybit"
 	"github.com/osman/bot-traider/internal/okx"
-	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/comparator"
+	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
 	"github.com/osman/bot-traider/internal/shared/detector"
 	"github.com/osman/bot-traider/internal/shared/logger"
@@ -81,7 +81,15 @@ func main() {
 	det.WithOnCrashEvent(tgAgg.OnCrashEvent)
 	tickerService.WithOnSend(det.Update)
 
-	bybitCfg := bybit.LoadConfig()
+
+	watchExchanges(ctx, log, st, tickerService)
+
+}
+
+
+func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, tickerService *ticker.TickerService) {
+
+		bybitCfg := bybit.LoadConfig()
 	log.Info("bybit config loaded", zap.Bool("enabled", bybitCfg.Enabled))
 	if bybitCfg.Enabled {
 		log.Info("starting bybit")
@@ -129,4 +137,7 @@ func main() {
 	if err := binanceClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("binance client stopped", zap.Error(err))
 	}
+
+
+
 }
