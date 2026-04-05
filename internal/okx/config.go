@@ -9,6 +9,7 @@ type Config struct {
 	sharedconfig.Base
 	WSURL   string
 	RestURL string
+	Enabled bool
 }
 
 // LoadConfig читает конфиг из переменных окружения с fallback на дефолты.
@@ -23,5 +24,6 @@ func LoadConfig() *Config {
 		Base:    base,
 		WSURL:   wsURL,
 		RestURL: restURL,
+		Enabled: sharedconfig.GetEnvBool("OKX_ENABLED", true),
 	}
 }

@@ -65,21 +65,50 @@ func main() {
 	det.WithOnCrash(st.RecordCrash)
 	tickerService.WithOnSend(det.Update)
 
-	bybitClient := bybit.NewClient(bybit.LoadConfig(), log.With(zap.String("market", "bybit")), st, tickerService)
-	go func() {
-		if err := bybitClient.Run(ctx); err != nil {
-			log.Error("bybit client stopped", zap.Error(err))
-		}
-	}()
+	bybitCfg := bybit.LoadConfig()
+	log.Info("bybit config loaded", zap.Bool("enabled", bybitCfg.Enabled))
+	if bybitCfg.Enabled {
+		log.Info("starting bybit")
+		bybitClient := bybit.NewClient(bybitCfg, log.With(zap.String("market", "bybit")), st, tickerService)
+		go func() {
+			log.Info("bybit goroutine started")
+			if err := bybitClient.Run(ctx); err != nil {
+				log.Error("bybit client stopped", zap.Error(err))
+			}
+		}()
+	} else {
+		log.Info("bybit disabled, skipping")
+	}
 
-	okxClient := okx.NewClient(okx.LoadConfig(), log.With(zap.String("market", "okx")), st, tickerService)
-	go func() {
-		if err := okxClient.Run(ctx); err != nil {
-			log.Error("okx client stopped", zap.Error(err))
-		}
-	}()
+	okxCfg := okx.LoadConfig()
+	log.Info("okx config loaded", zap.Bool("enabled", okxCfg.Enabled))
+	if okxCfg.Enabled {
+		log.Info("starting okx")
+		okxClient := okx.NewClient(okxCfg, log.With(zap.String("market", "okx")), st, tickerService)
+		go func() {
+			log.Info("okx goroutine started")
+			if err := okxClient.Run(ctx); err != nil {
+				log.Error("okx client stopped", zap.Error(err))
+			}
+		}()
+	} else {
+		log.Info("okx disabled, skipping")
+	}
 
 	binanceCfg := binance.LoadConfig()
+	log.Info("binance config loaded", zap.Bool("enabled", binanceCfg.Enabled))
+	if !binanceCfg.Enabled {
+		log.Info("binance disabled, skipping")
+		if !bybitCfg.Enabled && !okxCfg.Enabled {
+			log.Warn("no exchanges enabled, bot will do nothing")
+		}
+		<-ctx.Done()
+		return
+	}
+	if !bybitCfg.Enabled && !okxCfg.Enabled {
+		log.Warn("no exchanges enabled except binance")
+	}
+	log.Info("starting binance")
 	binanceClient := binance.NewClient(binanceCfg, log.With(zap.String("market", "binance")), st, tickerService)
 	if err := binanceClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("binance client stopped", zap.Error(err))

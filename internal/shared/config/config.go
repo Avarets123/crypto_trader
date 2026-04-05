@@ -61,3 +61,13 @@ func GetEnvFloat(key string, fallback float64) float64 {
 	}
 	return fallback
 }
+
+// GetEnvBool возвращает bool-значение переменной окружения или fallback.
+func GetEnvBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return fallback
+}
