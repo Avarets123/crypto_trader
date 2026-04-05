@@ -148,8 +148,9 @@ func formatSummary(events []Event) string {
 	crashes := deduplicateBySymbol(filterEvents(events, EventCrash))
 	spreads := filterEvents(events, EventSpread)
 
+	total := len(pumps) + len(crashes) + len(spreads)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📊 <b>Сводка</b> (%d событий)\n", len(events)))
+	sb.WriteString(fmt.Sprintf("📊 <b>Сводка</b> (%d событий)\n", total))
 
 	if len(pumps) > 0 {
 		sb.WriteString(fmt.Sprintf("\n🚀 <b>PUMP</b> (%d):\n", len(pumps)))
