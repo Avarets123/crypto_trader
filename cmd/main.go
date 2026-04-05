@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -55,8 +54,11 @@ func main() {
 		sharedconfig.GetEnv("TELEGRAM_CHAT_ID", ""),
 		log.With(zap.String("component", "telegram")),
 	)
-
-	
+	tgAgg := telegram.NewAggregator(
+		tg,
+		sharedconfig.GetEnvInt("TELEGRAM_AGGREGATE_SEC", 30),
+		log.With(zap.String("component", "telegram")),
+	)
 
 	st := stats.New(ctx, log)
 
@@ -68,11 +70,13 @@ func main() {
 	cmp := comparator.New(ctx, cfg.SpreadThresholdPct, spreadRepo, log.With(zap.String("component", "comparator")))
 	cmp.WithOnSpreadOpen(st.RecordSpread)
 	cmp.WithOnSpreadOpenEvent(func(e *comparator.SpreadEvent) {
-		msg := fmt.Sprintf(
-			"⚡ <b>SPREAD</b> %s\n📊 %.2f%%\n🏦 %s → %.6f\n🏦 %s → %.6f",
-			e.Symbol, e.MaxSpreadPct, e.ExchangeHigh, e.PriceHigh, e.ExchangeLow, e.PriceLow,
-		)
-		go tg.Send(ctx, msg)
+		tgAgg.Add(ctx, telegram.Event{
+			Type:      telegram.EventSpread,
+			Symbol:    e.Symbol,
+			Exchange:  e.ExchangeHigh,
+			Exchange2: e.ExchangeLow,
+			ChangePct: e.MaxSpreadPct,
+		})
 	})
 	tickerService.WithOnSend(cmp.Update)
 
@@ -81,18 +85,22 @@ func main() {
 	det.WithOnPump(st.RecordPump)
 	det.WithOnCrash(st.RecordCrash)
 	det.WithOnPumpEvent(func(e *detector.DetectorEvent) {
-		msg := fmt.Sprintf(
-			"🚀 <b>PUMP</b> %s | %s\n📈 %.2f%% за %d сек\n💰 %.6f → %.6f",
-			e.Symbol, e.Exchange, e.ChangePct, e.WindowSec, e.PriceBefore, e.PriceNow,
-		)
-		go tg.Send(ctx, msg)
+		tgAgg.Add(ctx, telegram.Event{
+			Type:      telegram.EventPump,
+			Symbol:    e.Symbol,
+			Exchange:  e.Exchange,
+			ChangePct: e.ChangePct,
+			WindowSec: e.WindowSec,
+		})
 	})
 	det.WithOnCrashEvent(func(e *detector.DetectorEvent) {
-		msg := fmt.Sprintf(
-			"💥 <b>FLASH CRASH</b> %s | %s\n📉 %.2f%% за %d сек\n💰 %.6f → %.6f",
-			e.Symbol, e.Exchange, e.ChangePct, e.WindowSec, e.PriceBefore, e.PriceNow,
-		)
-		go tg.Send(ctx, msg)
+		tgAgg.Add(ctx, telegram.Event{
+			Type:      telegram.EventCrash,
+			Symbol:    e.Symbol,
+			Exchange:  e.Exchange,
+			ChangePct: e.ChangePct,
+			WindowSec: e.WindowSec,
+		})
 	})
 	tickerService.WithOnSend(det.Update)
 
