@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"github.com/osman/bot-traider/internal/shared/detector"
 	"github.com/osman/bot-traider/internal/shared/logger"
 	"github.com/osman/bot-traider/internal/shared/stats"
+	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
 )
 
@@ -48,6 +50,14 @@ func main() {
 		cancel()
 	}()
 
+	tg := telegram.New(
+		sharedconfig.GetEnv("TELEGRAM_BOT_TOKEN", ""),
+		sharedconfig.GetEnv("TELEGRAM_CHAT_ID", ""),
+		log.With(zap.String("component", "telegram")),
+	)
+
+	
+
 	st := stats.New(ctx, log)
 
 	repo := ticker.NewRepository(pool, log)
@@ -57,12 +67,33 @@ func main() {
 	spreadRepo := comparator.NewSpreadRepository(pool, log.With(zap.String("component", "comparator")))
 	cmp := comparator.New(ctx, cfg.SpreadThresholdPct, spreadRepo, log.With(zap.String("component", "comparator")))
 	cmp.WithOnSpreadOpen(st.RecordSpread)
+	cmp.WithOnSpreadOpenEvent(func(e *comparator.SpreadEvent) {
+		msg := fmt.Sprintf(
+			"⚡ <b>SPREAD</b> %s\n📊 %.2f%%\n🏦 %s → %.6f\n🏦 %s → %.6f",
+			e.Symbol, e.MaxSpreadPct, e.ExchangeHigh, e.PriceHigh, e.ExchangeLow, e.PriceLow,
+		)
+		go tg.Send(ctx, msg)
+	})
 	tickerService.WithOnSend(cmp.Update)
 
 	detectorRepo := detector.NewDetectorRepository(pool, log.With(zap.String("component", "detector")))
 	det := detector.New(ctx, detector.LoadConfig(), detectorRepo, log.With(zap.String("component", "detector")))
 	det.WithOnPump(st.RecordPump)
 	det.WithOnCrash(st.RecordCrash)
+	det.WithOnPumpEvent(func(e *detector.DetectorEvent) {
+		msg := fmt.Sprintf(
+			"🚀 <b>PUMP</b> %s | %s\n📈 %.2f%% за %d сек\n💰 %.6f → %.6f",
+			e.Symbol, e.Exchange, e.ChangePct, e.WindowSec, e.PriceBefore, e.PriceNow,
+		)
+		go tg.Send(ctx, msg)
+	})
+	det.WithOnCrashEvent(func(e *detector.DetectorEvent) {
+		msg := fmt.Sprintf(
+			"💥 <b>FLASH CRASH</b> %s | %s\n📉 %.2f%% за %d сек\n💰 %.6f → %.6f",
+			e.Symbol, e.Exchange, e.ChangePct, e.WindowSec, e.PriceBefore, e.PriceNow,
+		)
+		go tg.Send(ctx, msg)
+	})
 	tickerService.WithOnSend(det.Update)
 
 	bybitCfg := bybit.LoadConfig()

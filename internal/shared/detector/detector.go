@@ -35,9 +35,11 @@ type Detector struct {
 	log               *zap.Logger
 	repo              *DetectorRepository
 	ctx               context.Context
-	events            chan *DetectorEvent
-	onPump            func()
-	onCrash           func()
+	events           chan *DetectorEvent
+	onPump           func()
+	onCrash          func()
+	onPumpEvent      func(*DetectorEvent)
+	onCrashEvent     func(*DetectorEvent)
 }
 
 // WithOnPump устанавливает хук, вызываемый при каждом обнаруженном pump.
@@ -48,6 +50,16 @@ func (d *Detector) WithOnPump(fn func()) {
 // WithOnCrash устанавливает хук, вызываемый при каждом обнаруженном flash crash.
 func (d *Detector) WithOnCrash(fn func()) {
 	d.onCrash = fn
+}
+
+// WithOnPumpEvent устанавливает хук с данными события pump.
+func (d *Detector) WithOnPumpEvent(fn func(*DetectorEvent)) {
+	d.onPumpEvent = fn
+}
+
+// WithOnCrashEvent устанавливает хук с данными события flash crash.
+func (d *Detector) WithOnCrashEvent(fn func(*DetectorEvent)) {
+	d.onCrashEvent = fn
 }
 
 // New создаёт Detector с заданными параметрами.
@@ -177,6 +189,9 @@ func (d *Detector) Update(t ticker.Ticker) {
 		if d.onPump != nil {
 			d.onPump()
 		}
+		if d.onPumpEvent != nil {
+			d.onPumpEvent(e)
+		}
 		if d.events != nil {
 			d.enqueue(e)
 		}
@@ -201,6 +216,9 @@ func (d *Detector) Update(t ticker.Ticker) {
 		)
 		if d.onCrash != nil {
 			d.onCrash()
+		}
+		if d.onCrashEvent != nil {
+			d.onCrashEvent(e)
 		}
 		if d.events != nil {
 			d.enqueue(e)
