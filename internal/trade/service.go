@@ -96,7 +96,7 @@ func (m *Service) OpenTrade(ctx context.Context, newTrade Trade) (int64, error) 
 		TargetPrice:    newTrade.TargetPrice,
 		StopLossPrice:  newTrade.StopLossPrice,
 		EntryOrderID:   entryOrderID,
-		SignalData:     newTrade.SignalData,
+		SpreadID:       newTrade.SpreadID,
 		OpenedAt:       time.Now(),
 	}
 

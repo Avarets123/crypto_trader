@@ -34,13 +34,13 @@ func (r *TradeRepository) SaveClosedTrade(ctx context.Context, t *Trade) error {
 		 (strategy, mode, signal_exchange, trade_exchange, symbol, qty,
 		  entry_price, target_price, stop_loss_price,
 		  exit_price, exit_reason, pnl_usdt,
-		  entry_order_id, exit_order_id, signal_data,
+		  entry_order_id, exit_order_id, spread_id,
 		  opened_at, closed_at)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		t.Strategy, t.Mode, t.SignalExchange, t.TradeExchange, t.Symbol, t.Qty,
 		t.EntryPrice, t.TargetPrice, t.StopLossPrice,
 		t.ExitPrice, t.ExitReason, t.PnlUSDT,
-		nilIfEmpty(t.EntryOrderID), nilIfEmpty(t.ExitOrderID), t.SignalData,
+		nilIfEmpty(t.EntryOrderID), nilIfEmpty(t.ExitOrderID), t.SpreadID,
 		t.OpenedAt, t.ClosedAt,
 	)
 	if err != nil {

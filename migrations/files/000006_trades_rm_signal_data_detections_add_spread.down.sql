@@ -1,0 +1,9 @@
+BEGIN;
+
+DROP INDEX IF EXISTS idx_trades_spread_id;
+
+ALTER TABLE trades DROP COLUMN IF EXISTS spread_id;
+
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS signal_data JSONB;
+
+COMMIT;

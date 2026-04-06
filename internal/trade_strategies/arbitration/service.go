@@ -2,7 +2,6 @@ package arbitration
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"sync"
 	"time"
@@ -112,8 +111,6 @@ func (s *Service) OnSpreadOpen(event *comparator.SpreadEvent) {
 	}
 
 
-	signalData, _ := json.Marshal(event)
-
 	id, err := s.tradeSvc.OpenTrade(s.ctx, trade.Trade{
 		Strategy:       "arbitration",
 		SignalExchange: signalExchange,
@@ -123,7 +120,7 @@ func (s *Service) OnSpreadOpen(event *comparator.SpreadEvent) {
 		EntryPrice:     entryPrice,
 		TargetPrice:    &targetPrice,
 		StopLossPrice:  &stopLoss,
-		SignalData:     signalData,
+		SpreadID:       &event.ID,
 	})
 	if err != nil {
 		s.log.Error("arb: open position failed",
