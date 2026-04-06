@@ -107,7 +107,7 @@ func main() {
 		bybitTradeClient = bybitRest
 	}
 
-	tgAgg := initTg(ctx, log)
+	tgNotifier, tgAgg := initTg(ctx, log)
 	st := stats.New(ctx, log)
 
 	// --- Ticker сервис ---
@@ -146,6 +146,9 @@ func main() {
 		log.With(zap.String("component", "order-manager")),
 	)
 
+	tradeNotif := newTradeNotifier(ctx, tgNotifier, log.With(zap.String("component", "trade-notifier")))
+	tradeSvc.WithOnTradeOpen(tradeNotif.OnTradeOpen)
+	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
 
 	// --- Lead-Lag Arb Executor ---
 	arbCfg := arbitration.LoadConfig()
@@ -211,16 +214,17 @@ func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, ticke
 }
 
 
-func initTg(ctx context.Context, log *zap.Logger, )*telegram.Aggregator {
-		tg := telegram.New(
+func initTg(ctx context.Context, log *zap.Logger) (*telegram.Notifier, *telegram.Aggregator) {
+	tg := telegram.New(
 		sharedconfig.GetEnv("TELEGRAM_BOT_TOKEN", ""),
 		sharedconfig.GetEnv("TELEGRAM_CHAT_ID", ""),
 		log.With(zap.String("component", "telegram")),
 	)
-	return telegram.NewAggregator(
+	agg := telegram.NewAggregator(
 		ctx,
 		tg,
 		sharedconfig.GetEnvInt("TELEGRAM_AGGREGATE_SEC", 30),
 		log.With(zap.String("component", "telegram")),
 	)
+	return tg, agg
 }

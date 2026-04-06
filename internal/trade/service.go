@@ -16,14 +16,26 @@ import (
 // Открытые позиции хранятся в памяти.
 // В БД пишется только при закрытии (единственный INSERT с полными данными).
 type Service struct {
-	mu        sync.RWMutex
-	devMode   bool
-	mode      string
-	idCounter int64
-	trades map[int64]*Trade
-	clients   map[string]exchange.RestClient
-	repo      *TradeRepository
-	log       *zap.Logger
+	mu           sync.RWMutex
+	devMode      bool
+	mode         string
+	idCounter    int64
+	trades       map[int64]*Trade
+	clients      map[string]exchange.RestClient
+	repo         *TradeRepository
+	log          *zap.Logger
+	onTradeOpen  []func(*Trade)
+	onTradeClose []func(*Trade)
+}
+
+// WithOnTradeOpen регистрирует хук, вызываемый при открытии сделки.
+func (m *Service) WithOnTradeOpen(fn func(*Trade)) {
+	m.onTradeOpen = append(m.onTradeOpen, fn)
+}
+
+// WithOnTradeClose регистрирует хук, вызываемый при закрытии сделки.
+func (m *Service) WithOnTradeClose(fn func(*Trade)) {
+	m.onTradeClose = append(m.onTradeClose, fn)
 }
 
 // New создаёт service.
@@ -112,6 +124,12 @@ func (m *Service) OpenTrade(ctx context.Context, newTrade Trade) (int64, error) 
 		zap.Float64("qty", newTrade.Qty),
 		zap.Int("open_positions", m.CountOpenPositions()),
 	)
+
+	for _, fn := range m.onTradeOpen {
+		fn := fn
+		go fn(pos)
+	}
+
 	return id, nil
 }
 
@@ -195,6 +213,12 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 		zap.Float64("pnl_usdt", pnl),
 		zap.Int("open_positions", m.CountOpenPositions()),
 	)
+
+	for _, fn := range m.onTradeClose {
+		fn := fn
+		go fn(trade)
+	}
+
 	return nil
 }
 
