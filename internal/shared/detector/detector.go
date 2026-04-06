@@ -27,39 +27,27 @@ type symbolState struct {
 
 // Detector обнаруживает резкие ценовые движения (pump и flash crash).
 type Detector struct {
-	mu                sync.RWMutex
-	symbols           map[string]*symbolState // ключ: "symbol|exchange"
-	pumpThreshold     float64
-	crashThreshold    float64
-	windowSec         int
-	log               *zap.Logger
-	repo              *DetectorRepository
-	ctx               context.Context
-	events           chan *DetectorEvent
-	onPump           func()
-	onCrash          func()
-	onPumpEvent      func(*DetectorEvent)
-	onCrashEvent     func(*DetectorEvent)
+	mu                  sync.RWMutex
+	symbols             map[string]*symbolState // ключ: "symbol|exchange"
+	pumpThreshold       float64
+	crashThreshold      float64
+	windowSec           int
+	log                 *zap.Logger
+	repo                *DetectorRepository
+	ctx                 context.Context
+	events              chan *DetectorEvent
+	onPumpListeners     []func(*DetectorEvent)
+	onCrashListeners    []func(*DetectorEvent)
 }
 
-// WithOnPump устанавливает хук, вызываемый при каждом обнаруженном pump.
-func (d *Detector) WithOnPump(fn func()) {
-	d.onPump = fn
-}
-
-// WithOnCrash устанавливает хук, вызываемый при каждом обнаруженном flash crash.
-func (d *Detector) WithOnCrash(fn func()) {
-	d.onCrash = fn
-}
-
-// WithOnPumpEvent устанавливает хук с данными события pump.
+// WithOnPumpEvent добавляет слушателя события pump.
 func (d *Detector) WithOnPumpEvent(fn func(*DetectorEvent)) {
-	d.onPumpEvent = fn
+	d.onPumpListeners = append(d.onPumpListeners, fn)
 }
 
-// WithOnCrashEvent устанавливает хук с данными события flash crash.
+// WithOnCrashEvent добавляет слушателя события flash crash.
 func (d *Detector) WithOnCrashEvent(fn func(*DetectorEvent)) {
-	d.onCrashEvent = fn
+	d.onCrashListeners = append(d.onCrashListeners, fn)
 }
 
 // New создаёт Detector с заданными параметрами.
@@ -187,11 +175,8 @@ func (d *Detector) Update(t ticker.Ticker) {
 			zap.Float64("price_now", price),
 			zap.Int("window_sec", d.windowSec),
 		)
-		if d.onPump != nil {
-			d.onPump()
-		}
-		if d.onPumpEvent != nil {
-			d.onPumpEvent(e)
+		for _, fn := range d.onPumpListeners {
+			fn(e)
 		}
 		if d.events != nil {
 			d.enqueue(e)
@@ -216,11 +201,8 @@ func (d *Detector) Update(t ticker.Ticker) {
 			zap.Float64("price_now", price),
 			zap.Int("window_sec", d.windowSec),
 		)
-		if d.onCrash != nil {
-			d.onCrash()
-		}
-		if d.onCrashEvent != nil {
-			d.onCrashEvent(e)
+		for _, fn := range d.onCrashListeners {
+			fn(e)
 		}
 		if d.events != nil {
 			d.enqueue(e)

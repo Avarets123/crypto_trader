@@ -39,25 +39,19 @@ type symbolPrices struct {
 
 // PriceComparator отслеживает цены символов по биржам и логирует межбиржевой спред.
 type PriceComparator struct {
-	mu            sync.RWMutex
-	symbols       map[string]*symbolPrices
-	threshold     float64
-	log           *zap.Logger
-	repo          *SpreadRepository
-	ctx           context.Context
-	events               chan spreadAction
-	onSpreadOpen         func()
-	onSpreadOpenEvents   func(*SpreadEvent)
+	mu                     sync.RWMutex
+	symbols                map[string]*symbolPrices
+	threshold              float64
+	log                    *zap.Logger
+	repo                   *SpreadRepository
+	ctx                    context.Context
+	events                 chan spreadAction
+	onSpreadOpenListeners  []func(*SpreadEvent)
 }
 
-// WithOnSpreadOpen устанавливает хук, вызываемый при каждом новом обнаруженном спреде.
-func (c *PriceComparator) WithOnSpreadOpen(fn func()) {
-	c.onSpreadOpen = fn
-}
-
-// WithOnSpreadOpenEvent добавляет хук с данными события спреда (можно вызывать несколько раз).
+// WithOnSpreadOpenEvent добавляет слушателя события открытия спреда.
 func (c *PriceComparator) WithOnSpreadOpenEvent(fn func(*SpreadEvent)) {
-	c.onSpreadOpenEvents = fn
+	c.onSpreadOpenListeners = append(c.onSpreadOpenListeners, fn)
 }
 
 // New создаёт PriceComparator с заданным порогом спреда в процентах.
@@ -209,15 +203,9 @@ func (c *PriceComparator) checkSpread(sp *symbolPrices, symbol string, prices ma
 						zap.Float64("price_low", pLow),
 						zap.Float64("spread_pct", absSpread),
 					)
-					if c.onSpreadOpen != nil {
-						c.onSpreadOpen()
+					for _, fn := range c.onSpreadOpenListeners {
+						fn(event)
 					}
-
-
-					if (c.onSpreadOpenEvents != nil) {
-						c.onSpreadOpenEvents(event)
-					}
-
 					if c.events != nil {
 						c.enqueue(spreadAction{kind: actionOpen, event: event})
 					}

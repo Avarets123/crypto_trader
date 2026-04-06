@@ -26,34 +26,3 @@ type Trade struct {
 	OpenedAt       time.Time
 	ClosedAt       *time.Time
 }
-
-
-// // OpenTrade — параметры открытия позиции.
-// type OpenTrade struct {
-// 	Strategy       string
-// 	SignalExchange string
-// 	TradeExchange  string
-// 	Symbol         string
-// 	Qty            float64
-// 	EntryPrice     float64
-// 	TargetPrice    *float64
-// 	StopLossPrice  *float64
-// 	SignalData     json.RawMessage
-// }
-
-// // inMemoryTrade — открытая позиция в памяти.
-// type inMemoryTrade struct {
-// 	id             int64
-// 	strategy       string
-// 	mode           string
-// 	signalExchange string
-// 	tradeExchange  string
-// 	symbol         string
-// 	qty            float64
-// 	entryPrice     float64
-// 	targetPrice    *float64
-// 	stopLossPrice  *float64
-// 	entryOrderID   string
-// 	signalData     json.RawMessage
-// 	openedAt       time.Time
-// }

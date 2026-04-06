@@ -89,10 +89,14 @@ func main() {
 	// --- Detector (pump/crash) — только для Telegram уведомлений ---
 	detectorRepo := detector.NewDetectorRepository(pool, log.With(zap.String("component", "detector")))
 	det := detector.New(ctx, detector.LoadConfig(), detectorRepo, log.With(zap.String("component", "detector")))
-	det.WithOnPump(st.RecordPump)
-	det.WithOnCrash(st.RecordCrash)
-	det.WithOnPumpEvent(tgAgg.OnPumpEvent)
-	det.WithOnCrashEvent(tgAgg.OnCrashEvent)
+	det.WithOnPumpEvent(func(e *detector.DetectorEvent) {
+		st.RecordPump()
+		tgAgg.OnPumpEvent(e)
+	})
+	det.WithOnCrashEvent(func(e *detector.DetectorEvent) {
+		st.RecordCrash()
+		tgAgg.OnCrashEvent(e)
+	})
 
 	tradeRepo := trade.NewRepo(pool, log.With(zap.String("component", "trade-repo")))
 
@@ -114,11 +118,9 @@ func main() {
 	arbCfg := arbitration.LoadConfig()
 	arbSvc := arbitration.New(ctx, arbCfg, tradeSvc,  log.With(zap.String("component", "arb-executor")))
 
-	cmp.WithOnSpreadOpenEvent(func(e *comparator.SpreadEvent) {
-		arbSvc.OnSpreadOpen(e)
-		st.RecordSpread()
-		tgAgg.OnSpreadOpenEvent(e)
-	})
+	cmp.WithOnSpreadOpenEvent(arbSvc.OnSpreadOpen)
+	cmp.WithOnSpreadOpenEvent(func(_ *comparator.SpreadEvent) { st.RecordSpread() })
+	cmp.WithOnSpreadOpenEvent(tgAgg.OnSpreadOpenEvent)
 
 	tickerService.WithOnSend(arbSvc.OnTicker)
 	tickerService.WithOnSend(det.Update)
