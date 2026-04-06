@@ -74,12 +74,18 @@ func main() {
 		zap.Int("balances_count", len(bybitInfo.Balances)),
 	)
 
-	// WS-клиент для торговых ордеров Binance (вместо REST).
 	binanceWsTrade := binance.NewWsTradeClient(log.With(zap.String("component", "binance-ws-trade")))
 	go func() {
 		log.Info("binance ws trade client started")
 		binanceWsTrade.Run(ctx)
-		log.Info("binance ws trade client stopped")
+		log.Error("binance ws trade client stopped")
+	}()
+
+	bybitWsTrade := bybit.NewWsTradeClient(log.With(zap.String("component", "bybit-ws-trade")))
+	go func() {
+		log.Info("bybit ws trade client started")
+		bybitWsTrade.Run(ctx)
+		log.Error("bybit ws trade client stopped")
 	}()
 
 	tgAgg := initTg(ctx, log) 
@@ -110,7 +116,7 @@ func main() {
 
 	restClients := map[string]exchange.RestClient{
 		"binance": binanceWsTrade,
-		"bybit":   bybitRest,
+		"bybit":   bybitWsTrade,
 	}
 
 

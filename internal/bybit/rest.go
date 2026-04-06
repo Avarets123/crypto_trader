@@ -3,14 +3,10 @@ package bybit
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +16,9 @@ import (
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/exchange"
 )
+
+// Убеждаемся, что RestClient реализует exchange.RestClient.
+var _ exchange.RestClient = (*RestClient)(nil)
 
 // AccountInfo содержит базовую информацию об аккаунте Bybit.
 type AccountInfo struct {
@@ -224,9 +223,7 @@ func (c *RestClient) newSignedRequest(ctx context.Context, method, path, querySt
 		signPayload = timestamp + c.apiKey + recvWindow + body
 	}
 
-	mac := hmac.New(sha256.New, []byte(c.secret))
-	mac.Write([]byte(signPayload))
-	signature := hex.EncodeToString(mac.Sum(nil))
+	signature := signBybit(c.secret, signPayload)
 
 	fullURL := c.baseURL + path
 	if queryStr != "" {
@@ -291,11 +288,3 @@ func (c *RestClient) doWithRetryFn(reqFn func() (*http.Request, error)) (*http.R
 	return nil, fmt.Errorf("bybit: max retries exceeded")
 }
 
-// formatQty форматирует количество с учётом LOT_SIZE:
-// qty >= 1 → целое число, qty < 1 → 6 знаков после запятой.
-func formatQty(qty float64) string {
-	if qty >= 1 {
-		return strconv.FormatFloat(math.Floor(qty), 'f', 0, 64)
-	}
-	return strconv.FormatFloat(math.Floor(qty*1_000_000)/1_000_000, 'f', 6, 64)
-}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -19,14 +18,13 @@ type EventHandler interface {
 	OnTicker(t ticker.Ticker)
 }
 
-// Connection управляет одним WebSocket-соединением с Bybit.
+// Connection управляет одним WebSocket-соединением с Bybit market data.
 type Connection struct {
 	id        int
-	wsURL     string
+	base      wsConn
 	symbols   []string
 	logger    *zap.Logger
 	handler   EventHandler
-	maxWait   time.Duration
 	lastPrice map[string]string
 	openPrice map[string]string // кешируем openPrice из snapshot для дельта-обновлений
 	stats     *stats.Stats
@@ -36,64 +34,23 @@ type Connection struct {
 func NewConnection(id int, symbols []string, wsURL string, log *zap.Logger, h EventHandler, maxWait time.Duration, st *stats.Stats) *Connection {
 	return &Connection{
 		id:        id,
-		wsURL:     wsURL,
+		base:      wsConn{url: wsURL, log: log, maxWait: maxWait},
 		symbols:   symbols,
 		logger:    log,
 		handler:   h,
-		maxWait:   maxWait,
 		lastPrice: make(map[string]string),
 		openPrice: make(map[string]string),
 		stats:     st,
 	}
 }
 
-// Run запускает соединение с экспоненциальным backoff до ctx.Done().
+// Run запускает соединение с exponential backoff до ctx.Done().
 func (c *Connection) Run(ctx context.Context) {
-	wait := time.Second
-	attempt := 0
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		err := c.connect(ctx)
-		if err == nil || ctx.Err() != nil {
-			return
-		}
-
-		attempt++
-		c.logger.Warn("reconnecting",
-			zap.Int("conn_id", c.id),
-			zap.Int("attempt", attempt),
-			zap.Duration("wait", wait),
-			zap.Error(err),
-		)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
-
-		wait *= 2
-		if wait > c.maxWait {
-			wait = c.maxWait
-		}
-	}
+	c.base.Run(ctx, c.onConnect)
 }
 
-// connect устанавливает одно WS-соединение и читает сообщения до ошибки или ctx.Done().
-func (c *Connection) connect(ctx context.Context) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL, nil)
-	if err != nil {
-		return fmt.Errorf("dial: %w", err)
-	}
-	defer conn.Close()
-
-	// Отправляем подписку сразу после установки соединения.
+// onConnect отправляет подписку и читает сообщения до ошибки или ctx.Done().
+func (c *Connection) onConnect(ctx context.Context, conn *websocket.Conn) error {
 	sub := subscribeMsg{Op: "subscribe", Args: BuildTopics(c.symbols)}
 	if err := conn.WriteJSON(sub); err != nil {
 		return fmt.Errorf("subscribe: %w", err)
@@ -123,9 +80,8 @@ func (c *Connection) connect(ctx context.Context) error {
 }
 
 // handleMessage разбирает входящее сообщение и вызывает нужный обработчик.
-// Bybit шлёт JSON-ping как текстовое сообщение — обрабатываем здесь, не через SetPingHandler.
+// Bybit шлёт JSON-ping как текстовое сообщение — обрабатываем здесь.
 func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
-	// Сначала проверяем служебные op-сообщения (ping/pong).
 	var op opMessage
 	if err := json.Unmarshal(raw, &op); err == nil && op.Op == "ping" {
 		return conn.WriteJSON(opMessage{Op: "pong"})
@@ -136,12 +92,10 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 		return fmt.Errorf("unmarshal topic message: %w", err)
 	}
 
-	// Пропускаем служебные ответы на subscribe и прочие без топика.
 	if msg.Topic == "" {
 		return nil
 	}
 
-	// Обрабатываем только тикеры.
 	if len(msg.Topic) < 8 || msg.Topic[:8] != "tickers." {
 		return nil
 	}
@@ -151,7 +105,6 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 		return fmt.Errorf("unmarshal ticker data: %w", err)
 	}
 
-	// Обновляем кеш openPrice при наличии в сообщении (только в snapshot).
 	if data.OpenPrice != "" {
 		c.openPrice[data.Symbol] = data.OpenPrice
 	}
@@ -162,7 +115,6 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 
 	c.lastPrice[data.Symbol] = data.LastPrice
 
-	// Используем кешированный openPrice, если дельта его не прислала.
 	openPrice := data.OpenPrice
 	if openPrice == "" {
 		openPrice = c.openPrice[data.Symbol]
@@ -182,27 +134,4 @@ func (c *Connection) handleMessage(conn *websocket.Conn, raw []byte) error {
 		CreatedAt: time.Now(),
 	})
 	return nil
-}
-
-// quoteFromSymbol определяет котируемую валюту по суффиксу символа.
-func quoteFromSymbol(symbol string) string {
-	if strings.HasSuffix(symbol, "BTC") {
-		return "BTC"
-	}
-	return "USDT"
-}
-
-// calcChangePct вычисляет процентное изменение цены относительно открытия.
-func calcChangePct(open, last string) string {
-	var o, l float64
-	fmt.Sscanf(open, "%f", &o)
-	fmt.Sscanf(last, "%f", &l)
-	if o == 0 {
-		return "0.00%"
-	}
-	pct := (l - o) / o * 100
-	if pct >= 0 {
-		return fmt.Sprintf("+%.2f%%", pct)
-	}
-	return fmt.Sprintf("%.2f%%", pct)
 }

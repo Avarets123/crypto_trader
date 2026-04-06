@@ -59,7 +59,7 @@ func NewWsTradeClient(log *zap.Logger) *WsTradeClient {
 	devMode := sharedconfig.GetEnv("DEV_MODE", "false") == "true"
 	wsURL := "wss://ws-api.binance.com/ws-api/v3"
 	if devMode {
-		wsURL = "wss://testnet.binance.vision/ws-api/v3"
+		wsURL = "wss://ws-api.testnet.binance.vision/ws-api/v3"
 	}
 	maxWait := time.Duration(sharedconfig.GetEnvInt("RECONNECT_MAX_WAIT", 60)) * time.Second
 
