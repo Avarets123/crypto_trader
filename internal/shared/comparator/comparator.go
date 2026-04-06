@@ -45,9 +45,9 @@ type PriceComparator struct {
 	log           *zap.Logger
 	repo          *SpreadRepository
 	ctx           context.Context
-	events              chan spreadAction
-	onSpreadOpen        func()
-	onSpreadOpenEvent   func(*SpreadEvent)
+	events               chan spreadAction
+	onSpreadOpen         func()
+	onSpreadOpenEvents   func(*SpreadEvent)
 }
 
 // WithOnSpreadOpen устанавливает хук, вызываемый при каждом новом обнаруженном спреде.
@@ -55,9 +55,9 @@ func (c *PriceComparator) WithOnSpreadOpen(fn func()) {
 	c.onSpreadOpen = fn
 }
 
-// WithOnSpreadOpenEvent устанавливает хук с данными события спреда.
+// WithOnSpreadOpenEvent добавляет хук с данными события спреда (можно вызывать несколько раз).
 func (c *PriceComparator) WithOnSpreadOpenEvent(fn func(*SpreadEvent)) {
-	c.onSpreadOpenEvent = fn
+	c.onSpreadOpenEvents = fn
 }
 
 // New создаёт PriceComparator с заданным порогом спреда в процентах.
@@ -212,9 +212,12 @@ func (c *PriceComparator) checkSpread(sp *symbolPrices, symbol string, prices ma
 					if c.onSpreadOpen != nil {
 						c.onSpreadOpen()
 					}
-					if c.onSpreadOpenEvent != nil {
-						c.onSpreadOpenEvent(event)
+
+
+					if (c.onSpreadOpenEvents != nil) {
+						c.onSpreadOpenEvents(event)
 					}
+
 					if c.events != nil {
 						c.enqueue(spreadAction{kind: actionOpen, event: event})
 					}

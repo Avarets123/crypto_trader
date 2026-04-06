@@ -2,7 +2,6 @@ package ticker
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -47,7 +46,7 @@ func (r *TickerRepository) SaveBatch(ctx context.Context, batch []Ticker) error 
 		})
 	}
 
-	insCount, err := r.pool.CopyFrom(
+	_, err := r.pool.CopyFrom(
 		ctx,
 		pgx.Identifier{"tickers"},
 		[]string{"exchange", "symbol", "quote", "price", "open_24h", "high_24h", "low_24h", "volume_24h", "change_pct", "received_at"},
@@ -58,7 +57,6 @@ func (r *TickerRepository) SaveBatch(ctx context.Context, batch []Ticker) error 
 		return err
 	}
 
-	r.log.Info(fmt.Sprintf("Inserset tickers count is: %d", insCount))
 
 	return nil
 }

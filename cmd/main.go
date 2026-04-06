@@ -17,12 +17,14 @@ import (
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
 	"github.com/osman/bot-traider/internal/shared/detector"
+	"github.com/osman/bot-traider/internal/shared/exchange"
 	"github.com/osman/bot-traider/internal/shared/logger"
 	"github.com/osman/bot-traider/internal/shared/stats"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
+	"github.com/osman/bot-traider/internal/trade"
+	"github.com/osman/bot-traider/internal/trade_strategies/arbitration"
 )
-
 
 func main() {
 	godotenv.Load()
@@ -30,11 +32,12 @@ func main() {
 	cfg := sharedconfig.LoadBase()
 	log := logger.New(cfg.LogLevel)
 
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	defer log.Sync() //nolint:errcheck
-	
+
 	pool, err := db.NewPool(ctx, cfg.PostgresDSN)
 	if err != nil {
 		log.Fatal("db connect failed", zap.Error(err))
@@ -49,47 +52,83 @@ func main() {
 		cancel()
 	}()
 
-	tg := telegram.New(
-		sharedconfig.GetEnv("TELEGRAM_BOT_TOKEN", ""),
-		sharedconfig.GetEnv("TELEGRAM_CHAT_ID", ""),
-		log.With(zap.String("component", "telegram")),
-	)
-	tgAgg := telegram.NewAggregator(
-		ctx,
-		tg,
-		sharedconfig.GetEnvInt("TELEGRAM_AGGREGATE_SEC", 30),
-		log.With(zap.String("component", "telegram")),
+	binanceRest := binance.NewRestClient(log.With(zap.String("component", "binance-rest")))
+	bybitRest := bybit.NewRestClient(log.With(zap.String("component", "bybit-rest")))
+	log.Info("checking exchange api keys...")
+
+	binanceInfo, err := binanceRest.GetAccountInfo(ctx)
+	if err != nil {
+		log.Fatal("binance api key invalid", zap.Error(err))
+	}
+	log.Info("binance api key valid",
+		zap.String("account_type", binanceInfo.AccountType),
+		zap.Int("balances_count", len(binanceInfo.Balances)),
 	)
 
+	bybitInfo, err := bybitRest.GetAccountInfo(ctx)
+	if err != nil {
+		log.Fatal("bybit api key invalid", zap.Error(err))
+	}
+	log.Info("bybit api key valid",
+		zap.String("account_type", bybitInfo.AccountType),
+		zap.Int("balances_count", len(bybitInfo.Balances)),
+	)
+
+	tgAgg := initTg(ctx, log) 
 	st := stats.New(ctx, log)
 
+	// --- Ticker сервис ---
 	repo := ticker.NewRepository(pool, log)
 	tickerService := ticker.NewService(ctx, repo, log, ticker.LoadConfig())
 	log.Info("storage service started")
 
+	// --- Comparator (спред) ---
 	spreadRepo := comparator.NewSpreadRepository(pool, log.With(zap.String("component", "comparator")))
 	cmp := comparator.New(ctx, cfg.SpreadThresholdPct, spreadRepo, log.With(zap.String("component", "comparator")))
-	cmp.WithOnSpreadOpen(st.RecordSpread)
-	cmp.WithOnSpreadOpenEvent(tgAgg.OnSpreadOpenEvent)
-	tickerService.WithOnSend(cmp.Update)
 
+	// --- Detector (pump/crash) — только для Telegram уведомлений ---
 	detectorRepo := detector.NewDetectorRepository(pool, log.With(zap.String("component", "detector")))
 	det := detector.New(ctx, detector.LoadConfig(), detectorRepo, log.With(zap.String("component", "detector")))
 	det.WithOnPump(st.RecordPump)
 	det.WithOnCrash(st.RecordCrash)
 	det.WithOnPumpEvent(tgAgg.OnPumpEvent)
 	det.WithOnCrashEvent(tgAgg.OnCrashEvent)
-	tickerService.WithOnSend(det.Update)
 
+	tradeRepo := trade.NewRepo(pool, log.With(zap.String("component", "trade-repo")))
+
+	restClients := map[string]exchange.RestClient{
+		"binance": binanceRest,
+		"bybit":   bybitRest,
+	}
+
+
+	tradeSvc := trade.NewService(
+		cfg.DevMode,
+		tradeRepo,
+		restClients,
+		log.With(zap.String("component", "order-manager")),
+	)
+
+
+	// --- Lead-Lag Arb Executor ---
+	arbCfg := arbitration.LoadConfig()
+	arbSvc := arbitration.New(ctx, arbCfg, tradeSvc,  log.With(zap.String("component", "arb-executor")))
+
+	cmp.WithOnSpreadOpenEvent(func(e *comparator.SpreadEvent) {
+		arbSvc.OnSpreadOpen(e)
+		st.RecordSpread()
+		tgAgg.OnSpreadOpenEvent(e)
+	})
+
+	tickerService.WithOnSend(arbSvc.OnTicker)
+	tickerService.WithOnSend(det.Update)
+	tickerService.WithOnSend(cmp.Update)
 
 	watchExchanges(ctx, log, st, tickerService)
-
 }
 
-
 func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, tickerService *ticker.TickerService) {
-
-		bybitCfg := bybit.LoadConfig()
+	bybitCfg := bybit.LoadConfig()
 	log.Info("bybit config loaded", zap.Bool("enabled", bybitCfg.Enabled))
 	if bybitCfg.Enabled {
 		log.Info("starting bybit")
@@ -129,15 +168,24 @@ func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, ticke
 		<-ctx.Done()
 		return
 	}
-	if !bybitCfg.Enabled && !okxCfg.Enabled {
-		log.Warn("no exchanges enabled except binance")
-	}
 	log.Info("starting binance")
 	binanceClient := binance.NewClient(binanceCfg, log.With(zap.String("market", "binance")), st, tickerService)
 	if err := binanceClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("binance client stopped", zap.Error(err))
 	}
+}
 
 
-
+func initTg(ctx context.Context, log *zap.Logger, )*telegram.Aggregator {
+		tg := telegram.New(
+		sharedconfig.GetEnv("TELEGRAM_BOT_TOKEN", ""),
+		sharedconfig.GetEnv("TELEGRAM_CHAT_ID", ""),
+		log.With(zap.String("component", "telegram")),
+	)
+	return telegram.NewAggregator(
+		ctx,
+		tg,
+		sharedconfig.GetEnvInt("TELEGRAM_AGGREGATE_SEC", 30),
+		log.With(zap.String("component", "telegram")),
+	)
 }

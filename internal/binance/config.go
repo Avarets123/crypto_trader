@@ -15,12 +15,10 @@ type Config struct {
 // LoadConfig читает конфиг из переменных окружения с fallback на дефолты.
 func LoadConfig() *Config {
 	base := sharedconfig.LoadBase()
+	// Рыночные данные всегда с mainnet — testnet не имеет живых стримов.
+	// Testnet используется только REST-клиентом для размещения ордеров (binance/rest.go).
 	wsURL := "wss://stream.binance.com:9443"
 	restURL := "https://api.binance.com"
-	if base.DevMode {
-		wsURL = "wss://testnet.binance.vision"
-		restURL = "https://testnet.binance.vision"
-	}
 	return &Config{
 		Base:    base,
 		WSURL:   wsURL,
