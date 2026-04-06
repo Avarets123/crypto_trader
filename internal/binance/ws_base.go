@@ -86,6 +86,7 @@ func (w *wsConn) dial(ctx context.Context) (*websocket.Conn, error) {
 		return nil, fmt.Errorf("dial %s: %w", w.url, err)
 	}
 	conn.SetPingHandler(func(data string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second)) //nolint:errcheck
 		return conn.WriteControl(
 			websocket.PongMessage,
 			[]byte(data),

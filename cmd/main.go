@@ -74,21 +74,40 @@ func main() {
 		zap.Int("balances_count", len(bybitInfo.Balances)),
 	)
 
-	binanceWsTrade := binance.NewWsTradeClient(log.With(zap.String("component", "binance-ws-trade")))
-	go func() {
-		log.Info("binance ws trade client started")
-		binanceWsTrade.Run(ctx)
-		log.Error("binance ws trade client stopped")
-	}()
+	// --- Торговые клиенты (ws или rest) ---
+	binanceTradeMode := sharedconfig.GetEnv("BINANCE_TRADE_MODE", "ws")
+	log.Info("binance trade mode", zap.String("mode", binanceTradeMode))
+	var binanceTradeClient exchange.RestClient
+	if binanceTradeMode == "ws" {
+		binanceWsTrade := binance.NewWsTradeClient(log.With(zap.String("component", "binance-ws-trade")))
+		go func() {
+			log.Info("binance ws trade client started")
+			binanceWsTrade.Run(ctx)
+			log.Error("binance ws trade client stopped")
+		}()
+		binanceTradeClient = binanceWsTrade
+	} else {
+		log.Info("binance trading via REST")
+		binanceTradeClient = binanceRest
+	}
 
-	bybitWsTrade := bybit.NewWsTradeClient(log.With(zap.String("component", "bybit-ws-trade")))
-	go func() {
-		log.Info("bybit ws trade client started")
-		bybitWsTrade.Run(ctx)
-		log.Error("bybit ws trade client stopped")
-	}()
+	bybitTradeMode := sharedconfig.GetEnv("BYBIT_TRADE_MODE", "ws")
+	log.Info("bybit trade mode", zap.String("mode", bybitTradeMode))
+	var bybitTradeClient exchange.RestClient
+	if bybitTradeMode == "ws" {
+		bybitWsTrade := bybit.NewWsTradeClient(log.With(zap.String("component", "bybit-ws-trade")))
+		go func() {
+			log.Info("bybit ws trade client started")
+			bybitWsTrade.Run(ctx)
+			log.Error("bybit ws trade client stopped")
+		}()
+		bybitTradeClient = bybitWsTrade
+	} else {
+		log.Info("bybit trading via REST")
+		bybitTradeClient = bybitRest
+	}
 
-	tgAgg := initTg(ctx, log) 
+	tgAgg := initTg(ctx, log)
 	st := stats.New(ctx, log)
 
 	// --- Ticker сервис ---
@@ -115,8 +134,8 @@ func main() {
 	tradeRepo := trade.NewRepo(pool, log.With(zap.String("component", "trade-repo")))
 
 	restClients := map[string]exchange.RestClient{
-		"binance": binanceWsTrade,
-		"bybit":   bybitWsTrade,
+		"binance": binanceTradeClient,
+		"bybit":   bybitTradeClient,
 	}
 
 
