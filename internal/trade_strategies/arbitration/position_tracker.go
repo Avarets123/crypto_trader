@@ -54,21 +54,3 @@ func (t *PositionTracker) GetBySymbol(symbol string) (*ArbPosition, bool) {
 	return pos, ok
 }
 
-// GetAll возвращает копию всех активных позиций.
-func (t *PositionTracker) GetAll() []*ArbPosition {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	result := make([]*ArbPosition, 0, len(t.positions))
-	for _, pos := range t.positions {
-		result = append(result, pos)
-	}
-	return result
-}
-
-// Has возвращает true если по символу уже есть открытая позиция.
-func (t *PositionTracker) Has(symbol string) bool {
-	t.mu.Lock()
-	_, ok := t.positions[symbol]
-	t.mu.Unlock()
-	return ok
-}

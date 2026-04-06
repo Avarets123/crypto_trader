@@ -92,7 +92,7 @@ func (s *Service) OnSpreadOpen(event *comparator.SpreadEvent) {
 	s.mu.Unlock()
 
 	// уже есть открытая позиция по этому символу
-	if s.tracker.Has(symbol) {
+	if s.tradeSvc.HasOpenPosition(symbol) {
 		s.log.Warn("arbitration: position already open for symbol", zap.String("symbol", symbol))
 		return
 	}
