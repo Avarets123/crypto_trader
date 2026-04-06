@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/osman/bot-traider/internal/blacklist"
 )
 
 type exchangeInfo struct {
@@ -102,6 +104,8 @@ func (w *SymbolWatcher) refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	symbols = blacklist.FilterSymbols(symbols)
 
 	w.mu.Lock()
 	old := w.current

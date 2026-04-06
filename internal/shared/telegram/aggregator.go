@@ -176,13 +176,13 @@ func formatSummary(events []Event) string {
 		}
 	}
 
-	if len(spreads) > 0 {
-		sb.WriteString(fmt.Sprintf("\n⚡ <b>SPREAD</b> (%d):\n", len(spreads)))
-		for _, e := range spreads {
-			sb.WriteString(fmt.Sprintf("  • %s  <b>%.2f%%</b>  %s → %s\n",
-				e.Symbol, e.ChangePct, e.Exchange, e.Exchange2))
-		}
-	}
+	// if len(spreads) > 0 {
+	// 	sb.WriteString(fmt.Sprintf("\n⚡ <b>SPREAD</b> (%d):\n", len(spreads)))
+	// 	for _, e := range spreads {
+	// 		sb.WriteString(fmt.Sprintf("  • %s  <b>%.2f%%</b>  %s → %s\n",
+	// 			e.Symbol, e.ChangePct, e.Exchange, e.Exchange2))
+	// 	}
+	// }
 
 	return strings.TrimRight(sb.String(), "\n")
 }

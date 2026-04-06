@@ -55,6 +55,7 @@ func (s *Stats) RecordCrash() {
 	atomic.AddUint64(&s.crashesDetected, 1)
 }
 
+
 // Record атомарно увеличивает счётчики для указанной биржи.
 func (s *Stats) Record(exchange string, dataSize int) {
 	e, ok := s.exchanges[exchange]

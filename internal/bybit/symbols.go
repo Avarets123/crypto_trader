@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/osman/bot-traider/internal/blacklist"
 )
 
 func fetchSymbolsByQuote(ctx context.Context, restURL, quote string) ([]string, error) {
@@ -92,6 +94,8 @@ func (w *SymbolWatcher) refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	symbols = blacklist.FilterSymbols(symbols)
 
 	w.mu.Lock()
 	old := w.current

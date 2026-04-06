@@ -24,6 +24,7 @@ import (
 	"github.com/osman/bot-traider/internal/ticker"
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/arbitration"
+	"github.com/osman/bot-traider/internal/trade_strategies/momentum"
 )
 
 func main() {
@@ -161,6 +162,21 @@ func main() {
 	tickerService.WithOnSend(arbSvc.OnTicker)
 	tickerService.WithOnSend(det.Update)
 	tickerService.WithOnSend(cmp.Update)
+
+	// --- Momentum стратегия ---
+	momentumCfg := momentum.LoadConfig()
+	if momentumCfg.Enabled {
+		momentumSvc := momentum.New(ctx, momentumCfg, tradeSvc, log.With(zap.String("component", "momentum")))
+		det.WithOnPumpEvent(momentumSvc.OnPumpEvent)
+		det.WithOnCrashEvent(momentumSvc.OnCrashEvent)
+		tickerService.WithOnSend(momentumSvc.OnTicker)
+		log.Info("momentum strategy enabled",
+			zap.String("signal_exchange", momentumCfg.SignalExchange),
+			zap.String("trade_exchange", momentumCfg.TradeExchange),
+		)
+	} else {
+		log.Info("momentum strategy disabled (MOMENTUM_ENABLED=false)")
+	}
 
 	watchExchanges(ctx, log, st, tickerService)
 }

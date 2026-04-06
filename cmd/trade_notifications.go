@@ -72,6 +72,10 @@ func exitLabel(reason string) (emoji, label string) {
 		return "✅", "TP"
 	case "sl":
 		return "🛑", "SL"
+	case "trailing":
+		return "📉", "Trailing Stop"
+	case "crash":
+		return "💥", "Crash Exit"
 	case "timeout":
 		return "⏱", "Timeout"
 	default:
