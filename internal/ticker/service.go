@@ -33,18 +33,19 @@ func NewService(ctx context.Context, repo *TickerRepository, log *zap.Logger, cf
 	return service
 }
 
-// WithOnSend добавляет хук, вызываемый после каждого успешно отправленного тикера.
+// WithOnSend добавляет хук, вызываемый при каждом тикере (независимо от состояния канала хранилища).
 func (s *TickerService) WithOnSend(fn func(Ticker)) {
 	s.onSend = append(s.onSend, fn)
 }
 
-// Send отправляет тикер в канал. Неблокирующий: при переполнении — дропает.
+// Send вызывает все onSend-хуки (comparator, detector, arb) всегда,
+// затем неблокирующе пишет в канал хранилища — при переполнении дропает только запись в БД.
 func (s *TickerService) Send(t Ticker) {
+	for _, fn := range s.onSend {
+		fn(t)
+	}
 	select {
 	case s.ch <- t:
-		for _, fn := range s.onSend {
-			fn(t)
-		}
 	default:
 		s.log.Warn("storage: channel full, ticker dropped", zap.String("symbol", t.Symbol))
 	}
