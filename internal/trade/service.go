@@ -161,7 +161,7 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 	pnl := (exitPrice - trade.EntryPrice) * trade.Qty
 	closedAt := time.Now()
 
-	m.log.Info(trade.TradeExchange +": pnl calculated",
+	m.log.Info(trade.TradeExchange+": pnl calculated",
 		zap.Int64("id", id),
 		zap.Float64("entry_price", trade.EntryPrice),
 		zap.Float64("exit_price", exitPrice),
@@ -169,9 +169,11 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 		zap.Float64("pnl_usdt", pnl),
 	)
 
+	trade.ExitPrice = &exitPrice
+	trade.ExitReason = exitReason
+	trade.PnlUSDT = &pnl
+	trade.ExitOrderID = exitOrderID
 	trade.ClosedAt = &closedAt
-
-
 
 	if err := m.repo.SaveClosedTrade(ctx, trade); err != nil {
 		m.log.Error("order manager: save closed trade failed",
