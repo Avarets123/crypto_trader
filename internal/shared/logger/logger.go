@@ -12,14 +12,14 @@ const (
 	colorRed    = "\033[31m"
 	colorYellow = "\033[33m"
 	colorCyan   = "\033[36m"
-	colorGray   = "\033[37m"
+	colorPurple = "\033[35m"
 )
 
 func coloredLevel(level zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
 	var color string
 	switch level {
 	case zapcore.DebugLevel:
-		color = colorGray
+		color = colorPurple
 	case zapcore.InfoLevel:
 		color = colorCyan
 	case zapcore.WarnLevel:
