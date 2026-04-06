@@ -74,6 +74,14 @@ func main() {
 		zap.Int("balances_count", len(bybitInfo.Balances)),
 	)
 
+	// WS-клиент для торговых ордеров Binance (вместо REST).
+	binanceWsTrade := binance.NewWsTradeClient(log.With(zap.String("component", "binance-ws-trade")))
+	go func() {
+		log.Info("binance ws trade client started")
+		binanceWsTrade.Run(ctx)
+		log.Info("binance ws trade client stopped")
+	}()
+
 	tgAgg := initTg(ctx, log) 
 	st := stats.New(ctx, log)
 
@@ -101,7 +109,7 @@ func main() {
 	tradeRepo := trade.NewRepo(pool, log.With(zap.String("component", "trade-repo")))
 
 	restClients := map[string]exchange.RestClient{
-		"binance": binanceRest,
+		"binance": binanceWsTrade,
 		"bybit":   bybitRest,
 	}
 

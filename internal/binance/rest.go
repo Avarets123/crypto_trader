@@ -2,13 +2,9 @@ package binance
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -20,6 +16,9 @@ import (
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/exchange"
 )
+
+// Убеждаемся, что RestClient реализует exchange.RestClient.
+var _ exchange.RestClient = (*RestClient)(nil)
 
 // AccountInfo содержит базовую информацию об аккаунте Binance.
 type AccountInfo struct {
@@ -67,7 +66,7 @@ func NewRestClient(log *zap.Logger) *RestClient {
 // GetAccountInfo возвращает информацию об аккаунте (GET /api/v3/account).
 func (c *RestClient) GetAccountInfo(ctx context.Context) (AccountInfo, error) {
 	params := url.Values{}
-	c.sign(params)
+	signREST(c.secret, params)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		c.baseURL+"/api/v3/account?"+params.Encode(), nil)
@@ -125,7 +124,7 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 	params.Set("side", strings.ToUpper(side))
 	params.Set("type", "MARKET")
 	params.Set("quantity", formatQty(qty))
-	c.sign(params)
+	signREST(c.secret, params)
 
 	body := strings.NewReader(params.Encode())
 	reqFn := func() (*http.Request, error) {
@@ -191,7 +190,7 @@ func (c *RestClient) CancelOrder(ctx context.Context, symbol, orderID string) er
 	params := url.Values{}
 	params.Set("symbol", symbol)
 	params.Set("orderId", orderID)
-	c.sign(params)
+	signREST(c.secret, params)
 
 	reqFn := func() (*http.Request, error) {
 		r, err := http.NewRequestWithContext(ctx, http.MethodDelete,
@@ -216,15 +215,6 @@ func (c *RestClient) CancelOrder(ctx context.Context, symbol, orderID string) er
 
 	c.log.Info("binance: order cancelled", zap.String("order_id", orderID))
 	return nil
-}
-
-// sign добавляет timestamp и signature в params.
-func (c *RestClient) sign(params url.Values) {
-	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
-	params.Set("recvWindow", "5000")
-	mac := hmac.New(sha256.New, []byte(c.secret))
-	mac.Write([]byte(params.Encode()))
-	params.Set("signature", hex.EncodeToString(mac.Sum(nil)))
 }
 
 // doWithRetry выполняет запрос с повтором при 429 (rate-limit).
@@ -286,12 +276,3 @@ func (c *RestClient) doWithRetryFn(reqFn func() (*http.Request, error)) (*http.R
 	return nil, fmt.Errorf("binance: max retries exceeded")
 }
 
-// formatQty форматирует количество с учётом LOT_SIZE:
-// qty >= 1 → целое число (stepSize=1 у дешёвых монет),
-// qty < 1  → 6 знаков после запятой (BTC, ETH и т.п.).
-func formatQty(qty float64) string {
-	if qty >= 1 {
-		return strconv.FormatFloat(math.Floor(qty), 'f', 0, 64)
-	}
-	return strconv.FormatFloat(math.Floor(qty*1_000_000)/1_000_000, 'f', 6, 64)
-}
