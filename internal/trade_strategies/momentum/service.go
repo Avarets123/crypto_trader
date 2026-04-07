@@ -231,12 +231,14 @@ func (s *Service) watchTrade(t *MomentumTrade) {
 
 	trailingStop := t.EntryPrice * (1 - s.cfg.TrailingStopPct/100)
 	hardSL := t.EntryPrice * (1 - s.cfg.StopLossPct/100)
+	hardTPEnabled := s.cfg.TakeProfitPct > 0
 	hardTP := t.EntryPrice * (1 + s.cfg.TakeProfitPct/100)
 
 	s.log.Info("momentum: watching trade",
 		zap.Int64("id", t.ID),
 		zap.String("symbol", t.Symbol),
 		zap.Float64("entry_price", t.EntryPrice),
+		zap.Bool("hard_tp_enabled", hardTPEnabled),
 		zap.Float64("hard_tp", hardTP),
 		zap.Float64("hard_sl", hardSL),
 		zap.Float64("trailing_stop_initial", trailingStop),
@@ -309,8 +311,8 @@ func (s *Service) watchTrade(t *MomentumTrade) {
 				return
 			}
 
-			// Hard TP
-			if price >= hardTP {
+			// Hard TP (пропускается если MOMENTUM_TAKE_PROFIT_PCT=0 — выход только при падении)
+			if hardTPEnabled && price >= hardTP {
 				s.log.Info("momentum: hard TP hit",
 					zap.Int64("id", t.ID),
 					zap.String("symbol", t.Symbol),
