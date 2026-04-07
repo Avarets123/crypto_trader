@@ -153,13 +153,19 @@ func main() {
 
 	// --- Lead-Lag Arb Executor ---
 	arbCfg := arbitration.LoadConfig()
-	arbSvc := arbitration.New(ctx, arbCfg, tradeSvc,  log.With(zap.String("component", "arb-executor")))
+	if arbCfg.Enabled {
+		arbSvc := arbitration.New(ctx, arbCfg, tradeSvc, log.With(zap.String("component", "arb-executor")))
+		cmp.WithOnSpreadOpenEvent(arbSvc.OnSpreadOpen)
+		tickerService.WithOnSend(arbSvc.OnTicker)
+		log.Info("arbitration strategy enabled",
+			zap.Float64("min_spread_pct", arbCfg.MinSpreadPct),
+		)
+	} else {
+		log.Info("arbitration strategy disabled (ARB_ENABLED=false)")
+	}
 
-	cmp.WithOnSpreadOpenEvent(arbSvc.OnSpreadOpen)
 	cmp.WithOnSpreadOpenEvent(func(_ *comparator.SpreadEvent) { st.RecordSpread() })
 	cmp.WithOnSpreadOpenEvent(tgAgg.OnSpreadOpenEvent)
-
-	tickerService.WithOnSend(arbSvc.OnTicker)
 	tickerService.WithOnSend(det.Update)
 	tickerService.WithOnSend(cmp.Update)
 
