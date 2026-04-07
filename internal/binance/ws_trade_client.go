@@ -294,9 +294,10 @@ func (c *WsTradeClient) sendRequest(ctx context.Context, method string, params m
 		return wsTradeResponse{}, fmt.Errorf("write request: %w", err)
 	}
 
-	c.log.Debug("binance ws trade: request sent",
+	c.log.Info("binance ws trade: request sent",
 		zap.String("id", id),
 		zap.String("method", method),
+		zap.ByteString("body", data),
 	)
 
 	select {

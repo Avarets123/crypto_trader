@@ -136,6 +136,8 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 	params.Set("quantity", formattedQty)
 	signREST(c.secret, params)
 
+	c.log.Info("binance: order request body", zap.String("body", params.Encode()))
+
 	body := strings.NewReader(params.Encode())
 	reqFn := func() (*http.Request, error) {
 		r, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v3/order", strings.NewReader(params.Encode()))

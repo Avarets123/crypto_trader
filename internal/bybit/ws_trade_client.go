@@ -199,11 +199,12 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 	bySide := strings.Title(strings.ToLower(side)) 
 
 	args := map[string]interface{}{
-		"category":  "spot",
-		"symbol":    symbol,
-		"side":      bySide,
-		"orderType": "Market",
-		"qty":       formatQty(qty),
+		"category":   "spot",
+		"symbol":     symbol,
+		"side":       bySide,
+		"orderType":  "Market",
+		"qty":        formatQty(qty),
+		"marketUnit": "baseCoin",
 	}
 
 	resp, err := c.sendRequest(ctx, "order.create", args)
@@ -313,9 +314,10 @@ func (c *WsTradeClient) sendRequest(ctx context.Context, op string, args interfa
 		return wsTradeResponse{}, fmt.Errorf("write request: %w", err)
 	}
 
-	c.log.Debug("bybit ws trade: request sent",
+	c.log.Info("bybit ws trade: request sent",
 		zap.String("req_id", reqID),
 		zap.String("op", op),
+		zap.ByteString("body", data),
 	)
 
 	select {

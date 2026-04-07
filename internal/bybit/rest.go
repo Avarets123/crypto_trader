@@ -127,13 +127,16 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 	bySide := strings.Title(strings.ToLower(side)) //nolint:staticcheck
 
 	bodyMap := map[string]string{
-		"category":  "spot",
-		"symbol":    symbol,
-		"side":      bySide,
-		"orderType": "Market",
-		"qty":       formatQty(qty),
+		"category":   "spot",
+		"symbol":     symbol,
+		"side":       bySide,
+		"orderType":  "Market",
+		"qty":        formatQty(qty),
+		"marketUnit": "baseCoin",
 	}
 	bodyBytes, _ := json.Marshal(bodyMap)
+
+	c.log.Info("bybit: order request body", zap.ByteString("body", bodyBytes))
 
 	resp, err := c.doWithRetryFn(func() (*http.Request, error) {
 		return c.newSignedRequest(ctx, http.MethodPost, "/v5/order/create", "", string(bodyBytes))
