@@ -1,0 +1,5 @@
+BEGIN;
+
+ALTER TABLE trades DROP COLUMN IF EXISTS commission_usdt;
+
+COMMIT;

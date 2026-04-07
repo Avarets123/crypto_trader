@@ -17,6 +17,7 @@ type Trade struct {
 	ExitPrice      *float64
 	ExitReason     string   // 'tp' | 'sl' | 'timeout' | 'manual'
 	PnlUSDT        *float64
+	CommissionUSDT *float64 // суммарная комиссия (вход + выход, 0.1% за сторону)
 	EntryOrderID   string   // ID ордера открытия (пусто в test-режиме)
 	ExitOrderID    string   // ID ордера закрытия (пусто в test-режиме)
 	SpreadID       *int64   // ID спреда из таблицы spreads, с которого открыта сделка

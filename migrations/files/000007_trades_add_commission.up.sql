@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE trades
+    ADD COLUMN IF NOT EXISTS commission_usdt DECIMAL(20,8);
+
+COMMIT;

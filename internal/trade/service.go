@@ -176,7 +176,10 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 		zap.Float64("exit_price", exitPrice),
 	)
 
-	pnl := (exitPrice - trade.EntryPrice) * trade.Qty
+	// комиссия: 0.1% за вход + 0.1% за выход
+	const commissionRate = 0.001
+	commission := (trade.EntryPrice + exitPrice) * trade.Qty * commissionRate
+	pnl := (exitPrice-trade.EntryPrice)*trade.Qty - commission
 	closedAt := time.Now()
 
 	m.log.Info(trade.TradeExchange+": pnl calculated",
@@ -184,11 +187,13 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 		zap.Float64("entry_price", trade.EntryPrice),
 		zap.Float64("exit_price", exitPrice),
 		zap.Float64("qty", trade.Qty),
+		zap.Float64("commission_usdt", commission),
 		zap.Float64("pnl_usdt", pnl),
 	)
 
 	trade.ExitPrice = &exitPrice
 	trade.ExitReason = exitReason
+	trade.CommissionUSDT = &commission
 	trade.PnlUSDT = &pnl
 	trade.ExitOrderID = exitOrderID
 	trade.ClosedAt = &closedAt

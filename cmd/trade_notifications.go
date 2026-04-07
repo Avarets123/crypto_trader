@@ -62,6 +62,9 @@ func formatTradeCloseMsg(t *trade.Trade) string {
 	fmt.Fprintf(&sb, "Биржа:    %s [%s]\n", t.TradeExchange, t.Mode)
 	fmt.Fprintf(&sb, "Вход → Выход: %s → %s\n", formatPrice(t.EntryPrice), exitPrice(t))
 	fmt.Fprintf(&sb, "Количество: %s\n", formatQty(t.Qty))
+	if t.CommissionUSDT != nil {
+		fmt.Fprintf(&sb, "Комиссия: %s USDT\n", formatPrice(*t.CommissionUSDT))
+	}
 	if t.PnlUSDT != nil {
 		fmt.Fprintf(&sb, "PnL: <b>%s USDT</b>\n", formatPnl(*t.PnlUSDT))
 	}
