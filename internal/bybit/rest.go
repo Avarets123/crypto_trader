@@ -162,17 +162,25 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 		return exchange.OrderResult{}, fmt.Errorf("bybit place market order api error: %d %s", raw.RetCode, raw.RetMsg)
 	}
 
-	result := exchange.OrderResult{
-		OrderID: raw.Result.OrderID,
-		Qty:     qty,
+	// Bybit не возвращает fills в ответе на создание ордера.
+	// Применяем приближение: комиссия 0.1% списывается из полученного базового актива при BUY.
+	netQty := qty
+	if strings.EqualFold(side, "buy") {
+		netQty = qty * 0.999
 	}
 
 	c.log.Info("bybit: market order placed",
-		zap.String("order_id", result.OrderID),
+		zap.String("order_id", raw.Result.OrderID),
 		zap.String("symbol", symbol),
 		zap.String("side", side),
-		zap.Float64("qty", qty),
+		zap.Float64("requested_qty", qty),
+		zap.Float64("net_qty", netQty),
 	)
+
+	result := exchange.OrderResult{
+		OrderID: raw.Result.OrderID,
+		Qty:     netQty,
+	}
 	return result, nil
 }
 

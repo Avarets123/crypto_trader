@@ -29,6 +29,34 @@ func signREST(secret string, params url.Values) {
 	params.Set("signature", hex.EncodeToString(mac.Sum(nil)))
 }
 
+// baseAsset извлекает базовый актив из символа (например, "JOEUSDT" → "JOE").
+// Перебирает известные котировочные активы и отрезает суффикс.
+func baseAsset(symbol string) string {
+	for _, quote := range []string{"USDT", "USDC", "BUSD", "BTC", "ETH", "BNB"} {
+		if len(symbol) > len(quote) && symbol[len(symbol)-len(quote):] == quote {
+			return symbol[:len(symbol)-len(quote)]
+		}
+	}
+	return symbol
+}
+
+// netQtyAfterFills вычисляет фактически полученное количество базового актива после BUY-ордера.
+// Если комиссия списана в базовом активе (не в BNB/USDT), вычитает её из executedQty.
+func netQtyAfterFills(symbol string, executedQty float64, fills []struct {
+	Commission      string `json:"commission"`
+	CommissionAsset string `json:"commissionAsset"`
+}) float64 {
+	base := baseAsset(symbol)
+	net := executedQty
+	for _, f := range fills {
+		if f.CommissionAsset == base {
+			c, _ := strconv.ParseFloat(f.Commission, 64)
+			net -= c
+		}
+	}
+	return net
+}
+
 // signWS добавляет timestamp, recvWindow, apiKey и signature в map параметров (WS API).
 // Подпись вычисляется через HMAC-SHA256 от query-string представления параметров.
 func signWS(apiKey, secret string, params map[string]interface{}) {

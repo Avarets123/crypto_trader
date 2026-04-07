@@ -181,6 +181,10 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 		OrderID             int64  `json:"orderId"`
 		ExecutedQty         string `json:"executedQty"`
 		CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+		Fills               []struct {
+			Commission      string `json:"commission"`
+			CommissionAsset string `json:"commissionAsset"`
+		} `json:"fills"`
 	}
 	if err := json.Unmarshal(resp.Result, &raw); err != nil {
 		return exchange.OrderResult{}, fmt.Errorf("binance ws place order unmarshal: %w", err)
@@ -193,19 +197,24 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 		avgPrice = quoteQty / execQty
 	}
 
-	result := exchange.OrderResult{
-		OrderID: strconv.FormatInt(raw.OrderID, 10),
-		Qty:     execQty,
-		Price:   avgPrice,
-	}
+	// Вычисляем фактически полученное количество: если комиссия взята из базового актива,
+	// вычитаем её — именно столько окажется на балансе и можно продать.
+	netQty := netQtyAfterFills(symbol, execQty, raw.Fills)
 
 	c.log.Info("binance ws trade: order placed",
-		zap.String("order_id", result.OrderID),
+		zap.String("order_id", strconv.FormatInt(raw.OrderID, 10)),
 		zap.String("symbol", symbol),
 		zap.String("side", side),
-		zap.Float64("qty", execQty),
+		zap.Float64("exec_qty", execQty),
+		zap.Float64("net_qty", netQty),
 		zap.Float64("avg_price", avgPrice),
 	)
+
+	result := exchange.OrderResult{
+		OrderID: strconv.FormatInt(raw.OrderID, 10),
+		Qty:     netQty,
+		Price:   avgPrice,
+	}
 	return result, nil
 }
 

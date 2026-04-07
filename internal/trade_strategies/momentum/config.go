@@ -5,7 +5,7 @@ import sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 // Config хранит параметры Momentum стратегии.
 type Config struct {
 	Enabled          bool    // MOMENTUM_ENABLED=false
-	SignalExchange   string  // MOMENTUM_SIGNAL_EXCHANGE=binance; пусто = все биржи
+	SignalExchange   string  // MOMENTUM_SIGNAL_EXCHANGE; пусто = все биржи, торгуем там где памп
 	MinPumpPct       float64 // MOMENTUM_MIN_PUMP_PCT=2.0
 	TrailingStopPct  float64 // MOMENTUM_TRAILING_STOP_PCT=0.8
 	TakeProfitPct    float64 // MOMENTUM_TAKE_PROFIT_PCT=3.0
@@ -20,7 +20,7 @@ type Config struct {
 func LoadConfig() Config {
 	return Config{
 		Enabled:         sharedconfig.GetEnvBool("MOMENTUM_ENABLED", false),
-		SignalExchange:  sharedconfig.GetEnv("MOMENTUM_SIGNAL_EXCHANGE", "binance"),
+		SignalExchange:  sharedconfig.GetEnv("MOMENTUM_SIGNAL_EXCHANGE", ""),
 		MinPumpPct:      sharedconfig.GetEnvFloat("MOMENTUM_MIN_PUMP_PCT", 2.0),
 		TrailingStopPct: sharedconfig.GetEnvFloat("MOMENTUM_TRAILING_STOP_PCT", 0.8),
 		TakeProfitPct:   sharedconfig.GetEnvFloat("MOMENTUM_TAKE_PROFIT_PCT", 3.0),

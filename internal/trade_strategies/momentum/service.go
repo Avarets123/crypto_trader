@@ -115,7 +115,7 @@ func (s *Service) OnPumpEvent(event *detector.DetectorEvent) {
 		return
 	}
 
-	// trade exchange = биржа где обнаружен памп
+	// торгуем на той же бирже, где обнаружен памп
 	tradeExchange := event.Exchange
 
 	s.log.Info("momentum: pump signal accepted, opening trade",

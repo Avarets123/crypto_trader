@@ -95,6 +95,14 @@ func (m *Service) OpenTrade(ctx context.Context, newTrade Trade) (int64, error) 
 		zap.Float64("filled_price", newTrade.EntryPrice),
 	)
 
+	// Используем реально исполненное количество с биржи, а не запрошенное.
+	// На Binance spot комиссия 0.1% списывается из полученного актива,
+	// поэтому сохраняем result.Qty чтобы при продаже знать точное количество.
+	filledQty := newTrade.Qty
+	if result.Qty > 0 {
+		filledQty = result.Qty
+	}
+
 	id := atomic.AddInt64(&m.idCounter, 1)
 	pos := &Trade{
 		ID:             id,
@@ -103,7 +111,7 @@ func (m *Service) OpenTrade(ctx context.Context, newTrade Trade) (int64, error) 
 		SignalExchange: newTrade.SignalExchange,
 		TradeExchange:  newTrade.TradeExchange,
 		Symbol:         newTrade.Symbol,
-		Qty:            newTrade.Qty,
+		Qty:            filledQty,
 		EntryPrice:     newTrade.EntryPrice,
 		TargetPrice:    newTrade.TargetPrice,
 		StopLossPrice:  newTrade.StopLossPrice,
@@ -154,6 +162,13 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 	if !ok {
 		return fmt.Errorf(trade.TradeExchange +" : no rest client for exchange %q", trade.TradeExchange)
 	}
+	// trade.Qty уже содержит фактически полученное количество после вычета комиссии при покупке
+	// (биржевые клиенты возвращают netQty в result.Qty).
+	m.log.Info("trade service: placing sell order",
+		zap.Int64("id", id),
+		zap.String("symbol", trade.Symbol),
+		zap.Float64("sell_qty", trade.Qty),
+	)
 	result, err := client.PlaceMarketOrder(ctx, trade.Symbol, "sell", trade.Qty)
 	if err != nil {
 		m.log.Error("exchange: close order failed",
