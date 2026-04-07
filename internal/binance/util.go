@@ -13,11 +13,23 @@ import (
 
 // formatQty форматирует количество с учётом LOT_SIZE:
 // qty >= 1 → целое число, qty < 1 → 6 знаков после запятой.
+// Используется только если stepSize неизвестен.
 func formatQty(qty float64) string {
 	if qty >= 1 {
 		return strconv.FormatFloat(math.Floor(qty), 'f', 0, 64)
 	}
 	return strconv.FormatFloat(math.Floor(qty*1_000_000)/1_000_000, 'f', 6, 64)
+}
+
+// formatQtyWithStep форматирует количество с учётом LOT_SIZE stepSize биржи.
+// Округляет вниз до ближайшего кратного stepSize.
+func formatQtyWithStep(qty, stepSize float64) string {
+	if stepSize <= 0 {
+		return formatQty(qty)
+	}
+	floored := math.Floor(qty/stepSize) * stepSize
+	decimals := stepSizeDecimals(stepSize)
+	return strconv.FormatFloat(floored, 'f', decimals, 64)
 }
 
 // signREST добавляет timestamp, recvWindow и signature в url.Values (REST API).

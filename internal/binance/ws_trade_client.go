@@ -157,11 +157,20 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 		zap.Float64("qty", qty),
 	)
 
+	stepSize := getStepSize(ctx, symbol, c.log)
+	formattedQty := formatQtyWithStep(qty, stepSize)
+	c.log.Info("binance ws trade: formatted quantity for order",
+		zap.String("symbol", symbol),
+		zap.Float64("raw_qty", qty),
+		zap.Float64("step_size", stepSize),
+		zap.String("formatted_qty", formattedQty),
+	)
+
 	params := map[string]interface{}{
 		"symbol":   symbol,
 		"side":     strings.ToUpper(side),
 		"type":     "MARKET",
-		"quantity": formatQty(qty),
+		"quantity": formattedQty,
 	}
 	signWS(c.apiKey, c.secret, params)
 

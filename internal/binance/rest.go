@@ -50,6 +50,7 @@ func NewRestClient(log *zap.Logger) *RestClient {
 	if devMode {
 		baseURL = "https://testnet.binance.vision"
 	}
+	SetStepSizeBaseURL(baseURL)
 	log.Info("binance rest client created",
 		zap.String("base_url", baseURL),
 		zap.Bool("dev_mode", devMode),
@@ -119,11 +120,20 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 		zap.Float64("qty", qty),
 	)
 
+	stepSize := getStepSize(ctx, symbol, c.log)
+	formattedQty := formatQtyWithStep(qty, stepSize)
+	c.log.Info("binance: formatted quantity for order",
+		zap.String("symbol", symbol),
+		zap.Float64("raw_qty", qty),
+		zap.Float64("step_size", stepSize),
+		zap.String("formatted_qty", formattedQty),
+	)
+
 	params := url.Values{}
 	params.Set("symbol", symbol)
 	params.Set("side", strings.ToUpper(side))
 	params.Set("type", "MARKET")
-	params.Set("quantity", formatQty(qty))
+	params.Set("quantity", formattedQty)
 	signREST(c.secret, params)
 
 	body := strings.NewReader(params.Encode())
