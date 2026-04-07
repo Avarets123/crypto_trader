@@ -29,7 +29,6 @@ type Service struct {
 func New(ctx context.Context, cfg Config, tradeSvc *trade.Service, log *zap.Logger) *Service {
 	log.Info("momentum strategy initialized",
 		zap.String("signal_exchange", cfg.SignalExchange),
-		zap.String("trade_exchange", cfg.TradeExchange),
 		zap.Float64("min_pump_pct", cfg.MinPumpPct),
 		zap.Float64("trailing_stop_pct", cfg.TrailingStopPct),
 		zap.Float64("take_profit_pct", cfg.TakeProfitPct),
@@ -53,8 +52,8 @@ func New(ctx context.Context, cfg Config, tradeSvc *trade.Service, log *zap.Logg
 func (s *Service) OnPumpEvent(event *detector.DetectorEvent) {
 	symbol := event.Symbol
 
-	// 1. Фильтр: только сигналы с нужной биржи
-	if event.Exchange != s.cfg.SignalExchange {
+	// 1. Фильтр: только сигналы с нужной биржи (пустая строка = любая биржа)
+	if s.cfg.SignalExchange != "" && event.Exchange != s.cfg.SignalExchange {
 		s.log.Debug("momentum: pump ignored — wrong exchange",
 			zap.String("symbol", symbol),
 			zap.String("event_exchange", event.Exchange),
@@ -116,10 +115,12 @@ func (s *Service) OnPumpEvent(event *detector.DetectorEvent) {
 		return
 	}
 
+	// trade exchange = биржа где обнаружен памп
+	tradeExchange := event.Exchange
+
 	s.log.Info("momentum: pump signal accepted, opening trade",
 		zap.String("symbol", symbol),
-		zap.String("signal_exchange", event.Exchange),
-		zap.String("trade_exchange", s.cfg.TradeExchange),
+		zap.String("trade_exchange", tradeExchange),
 		zap.Float64("change_pct", event.ChangePct),
 		zap.Float64("entry_price", entryPrice),
 		zap.Float64("qty", qty),
@@ -128,8 +129,8 @@ func (s *Service) OnPumpEvent(event *detector.DetectorEvent) {
 	// 7. Открываем сделку
 	id, err := s.tradeSvc.OpenTrade(s.ctx, trade.Trade{
 		Strategy:       "momentum",
-		SignalExchange: s.cfg.SignalExchange,
-		TradeExchange:  s.cfg.TradeExchange,
+		SignalExchange: event.Exchange,
+		TradeExchange:  tradeExchange,
 		Symbol:         symbol,
 		Qty:            qty,
 		EntryPrice:     entryPrice,
@@ -150,8 +151,8 @@ func (s *Service) OnPumpEvent(event *detector.DetectorEvent) {
 	t := &MomentumTrade{
 		ID:             id,
 		Symbol:         symbol,
-		TradeExchange:  s.cfg.TradeExchange,
-		SignalExchange: s.cfg.SignalExchange,
+		TradeExchange:  tradeExchange,
+		SignalExchange: event.Exchange,
 		EntryPrice:     entryPrice,
 		PeakPrice:      entryPrice,
 		Qty:            qty,
@@ -174,13 +175,13 @@ func (s *Service) OnPumpEvent(event *detector.DetectorEvent) {
 
 // OnCrashEvent вызывается detector при обнаружении flash crash.
 func (s *Service) OnCrashEvent(event *detector.DetectorEvent) {
-	// Crash должен быть на торговой бирже
-	if event.Exchange != s.cfg.TradeExchange {
+	t, ok := s.tracker.Get(event.Symbol)
+	if !ok {
 		return
 	}
 
-	t, ok := s.tracker.Get(event.Symbol)
-	if !ok {
+	// Crash должен быть на той же бирже где куплен актив
+	if event.Exchange != t.TradeExchange {
 		return
 	}
 
@@ -199,12 +200,13 @@ func (s *Service) OnCrashEvent(event *detector.DetectorEvent) {
 
 // OnTicker получает тикеры и направляет цену в активные сделки.
 func (s *Service) OnTicker(t ticker.Ticker) {
-	if t.Exchange != s.cfg.TradeExchange {
+	trade, ok := s.tracker.Get(t.Symbol)
+	if !ok {
 		return
 	}
 
-	trade, ok := s.tracker.Get(t.Symbol)
-	if !ok {
+	// Следим за ценой только на бирже где куплен актив
+	if t.Exchange != trade.TradeExchange {
 		return
 	}
 

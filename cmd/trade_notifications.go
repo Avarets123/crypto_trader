@@ -39,6 +39,7 @@ func (n *tradeNotifier) OnTradeClose(t *trade.Trade) {
 func formatTradeOpenMsg(t *trade.Trade) string {
 	var sb strings.Builder
 	sb.WriteString("🟢 <b>Сделка открыта</b>\n")
+	fmt.Fprintf(&sb, "Стратегия: %s\n", strategyLabel(t.Strategy))
 	fmt.Fprintf(&sb, "Символ:   <b>%s</b>\n", t.Symbol)
 	fmt.Fprintf(&sb, "Биржа:    %s [%s]\n", t.TradeExchange, t.Mode)
 	fmt.Fprintf(&sb, "Цена входа: <b>%s</b>\n", formatPrice(t.EntryPrice))
@@ -56,6 +57,7 @@ func formatTradeCloseMsg(t *trade.Trade) string {
 	emoji, reason := exitLabel(t.ExitReason)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s <b>Сделка закрыта — %s</b>\n", emoji, reason)
+	fmt.Fprintf(&sb, "Стратегия: %s\n", strategyLabel(t.Strategy))
 	fmt.Fprintf(&sb, "Символ:   <b>%s</b>\n", t.Symbol)
 	fmt.Fprintf(&sb, "Биржа:    %s [%s]\n", t.TradeExchange, t.Mode)
 	fmt.Fprintf(&sb, "Вход → Выход: %s → %s\n", formatPrice(t.EntryPrice), exitPrice(t))
@@ -64,6 +66,17 @@ func formatTradeCloseMsg(t *trade.Trade) string {
 		fmt.Fprintf(&sb, "PnL: <b>%s USDT</b>\n", formatPnl(*t.PnlUSDT))
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func strategyLabel(strategy string) string {
+	switch strategy {
+	case "arb":
+		return "⚡ Lead-Lag Arb"
+	case "momentum", "pump":
+		return "🚀 Momentum"
+	default:
+		return strategy
+	}
 }
 
 func exitLabel(reason string) (emoji, label string) {

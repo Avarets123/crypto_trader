@@ -172,7 +172,6 @@ func main() {
 		tickerService.WithOnSend(momentumSvc.OnTicker)
 		log.Info("momentum strategy enabled",
 			zap.String("signal_exchange", momentumCfg.SignalExchange),
-			zap.String("trade_exchange", momentumCfg.TradeExchange),
 		)
 	} else {
 		log.Info("momentum strategy disabled (MOMENTUM_ENABLED=false)")

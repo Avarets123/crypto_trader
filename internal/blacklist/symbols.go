@@ -5,6 +5,7 @@ package blacklist
 var symbols = map[string]struct{}{
 	"UUSDT":    {},
 	"GLMRUSDT": {},
+	"BTTCUSDT": {}, // микроцена (~0.0000018 USDT), qty выходит за рамки баланса
 }
 
 // IsBlacklisted возвращает true, если символ находится в чёрном списке.
