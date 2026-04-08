@@ -17,9 +17,10 @@ import (
 type EventType string
 
 const (
-	EventPump   EventType = "pump"
-	EventCrash  EventType = "crash"
-	EventSpread EventType = "spread"
+	EventPump        EventType = "pump"
+	EventCrash       EventType = "crash"
+	EventSpread      EventType = "spread"
+	EventVolumeSpike EventType = "volume_spike"
 )
 
 // Event — одно событие для агрегации.
@@ -30,7 +31,11 @@ type Event struct {
 	Exchange2       string // для spread: биржа с низкой ценой
 	ChangePct       float64
 	WindowSec       int
-	TickerChangePct string // изменение за 24ч от биржи (строка)
+	TickerChangePct string  // изменение за 24ч от биржи (строка)
+	SpikeType       string  // для volume_spike: "A" | "B"
+	SpikeRatio      float64 // для volume_spike: current/avg
+	VolumeUSDT      float64 // для volume_spike: текущий объём в USDT
+	AvgUSDT         float64 // для volume_spike: скользящее среднее в USDT
 }
 
 // Aggregator собирает события за окно времени и отправляет одно сводное сообщение.
@@ -76,6 +81,20 @@ func (a *Aggregator) OnCrashEvent(e *detector.DetectorEvent) {
 		ChangePct:       e.ChangePct,
 		WindowSec:       e.WindowSec,
 		TickerChangePct: e.TickerChangePct,
+	})
+}
+
+// OnVolumeSpike — хук для detector.VolumeDetector.WithOnVolumeSpike.
+func (a *Aggregator) OnVolumeSpike(e detector.VolumeEvent) {
+	a.add(Event{
+		Type:       EventVolumeSpike,
+		Symbol:     e.Symbol,
+		Exchange:   e.Exchange,
+		ChangePct:  e.ChangePct,
+		SpikeType:  string(e.Type),
+		SpikeRatio: e.SpikeRatio,
+		VolumeUSDT: e.Volume,
+		AvgUSDT:    e.AvgVolume,
 	})
 }
 
@@ -142,13 +161,30 @@ func deduplicateBySymbol(events []Event) []Event {
 	return out
 }
 
+// deduplicateVolumeSpikes оставляет для каждого spikeType|symbol|exchange только последнее событие.
+// Типы A и B дедуплицируются независимо, чтобы не затирать друг друга.
+func deduplicateVolumeSpikes(events []Event) []Event {
+	seen := make(map[string]int) // key → последний индекс
+	for i, e := range events {
+		seen[e.SpikeType+"|"+e.Symbol+"|"+e.Exchange] = i
+	}
+	out := make([]Event, 0, len(seen))
+	for i, e := range events {
+		if seen[e.SpikeType+"|"+e.Symbol+"|"+e.Exchange] == i {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // formatSummary формирует сводное сообщение по всем накопленным событиям.
 func formatSummary(events []Event) string {
 	pumps := deduplicateBySymbol(filterEvents(events, EventPump))
 	crashes := deduplicateBySymbol(filterEvents(events, EventCrash))
 	spreads := filterEvents(events, EventSpread)
+	volSpikes := deduplicateVolumeSpikes(filterEvents(events, EventVolumeSpike))
 
-	total := len(pumps) + len(crashes) + len(spreads)
+	total := len(pumps) + len(crashes) + len(spreads) + len(volSpikes)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📊 <b>Сводка</b> (%d событий)\n", total))
 
@@ -173,6 +209,24 @@ func formatSummary(events []Event) string {
 				line += fmt.Sprintf("  (24ч: %s)", e.TickerChangePct)
 			}
 			sb.WriteString(line + "\n")
+		}
+	}
+
+	if len(volSpikes) > 0 {
+		sb.WriteString(fmt.Sprintf("\n📈 <b>Volume Spike</b> (%d):\n", len(volSpikes)))
+		for _, e := range volSpikes {
+			var icon string
+			switch e.SpikeType {
+			case "A":
+				icon = "🔵" // накопление
+			case "B":
+				icon = "🔴" // распродажа
+			default:
+				icon = "⚪"
+			}
+			sb.WriteString(fmt.Sprintf("  %s [%s] %s | %s  <b>%.1fx</b>  ΔP: <b>%.2f%%</b>  Vol: %.0fM\n",
+				icon, e.SpikeType, e.Symbol, e.Exchange,
+				e.SpikeRatio, e.ChangePct, e.VolumeUSDT/1_000_000))
 		}
 	}
 

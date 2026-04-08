@@ -17,6 +17,23 @@ func NewDetectorRepository(pool *pgxpool.Pool, log *zap.Logger) *DetectorReposit
 	return &DetectorRepository{pool: pool, log: log}
 }
 
+// SaveVolumeSpike вставляет событие аномального объёма в таблицу volume_spikes.
+func (r *DetectorRepository) SaveVolumeSpike(ctx context.Context, e VolumeEvent) {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO volume_spikes (symbol, exchange, type, spike_ratio, volume_usdt, avg_usdt, price, change_pct)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		e.Symbol, e.Exchange, string(e.Type), e.SpikeRatio, e.Volume, e.AvgVolume, e.Price, e.ChangePct,
+	)
+	if err != nil {
+		r.log.Error("volume spike: save failed",
+			zap.String("symbol", e.Symbol),
+			zap.String("exchange", e.Exchange),
+			zap.String("type", string(e.Type)),
+			zap.Error(err),
+		)
+	}
+}
+
 // Save вставляет событие в таблицу price_change_detections и записывает полученный id.
 func (r *DetectorRepository) Save(ctx context.Context, e *DetectorEvent) {
 	err := r.pool.QueryRow(ctx,

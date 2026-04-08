@@ -120,6 +120,7 @@ func main() {
 	tickerService.WithOnSend(det.Update)
 	tickerService.WithOnSend(cmp.Update)
 
+
 	// --- Momentum стратегия ---
 	momentumCfg := momentum.LoadConfig()
 	if momentumCfg.Enabled {
@@ -133,6 +134,20 @@ func main() {
 	} else {
 		log.Info("momentum strategy disabled (MOMENTUM_ENABLED=false)")
 	}
+
+
+
+	// --- Volume Spike детектор ---
+	volDetector := detector.NewVolumeDetector(ctx, detectorRepo, log.With(zap.String("component", "volume-detector")))
+	volDetector.WithOnVolumeSpike(func(e detector.VolumeEvent) {
+		if e.Type == detector.SpikeTypeC {
+			// тип C — памп, обрабатывается momentum стратегией
+			return
+		}
+		st.RecordVolumeSpike()
+		tgAgg.OnVolumeSpike(e)
+	})
+	tickerService.WithOnSend(volDetector.OnTicker)
 
 	watchExchanges(ctx, log, st, tickerService)
 }

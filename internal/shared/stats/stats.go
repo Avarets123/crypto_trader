@@ -22,6 +22,7 @@ type Stats struct {
 	spreadsDetected  uint64
 	pumpsDetected    uint64
 	crashesDetected  uint64
+	volumeSpikes     uint64
 }
 
 // New создаёт Stats с прединициализированными записями для каждой биржи.
@@ -55,6 +56,11 @@ func (s *Stats) RecordCrash() {
 	atomic.AddUint64(&s.crashesDetected, 1)
 }
 
+// RecordVolumeSpike атомарно увеличивает счётчик обнаруженных volume spike-событий.
+func (s *Stats) RecordVolumeSpike() {
+	atomic.AddUint64(&s.volumeSpikes, 1)
+}
+
 
 // Record атомарно увеличивает счётчики для указанной биржи.
 func (s *Stats) Record(exchange string, dataSize int) {
@@ -82,6 +88,7 @@ func (s *Stats) LogPeriodically(ctx context.Context, interval time.Duration, log
 					zap.Uint64("spreads_detected", atomic.LoadUint64(&s.spreadsDetected)),
 					zap.Uint64("pumps_detected", atomic.LoadUint64(&s.pumpsDetected)),
 					zap.Uint64("crashes_detected", atomic.LoadUint64(&s.crashesDetected)),
+					zap.Uint64("volume_spikes", atomic.LoadUint64(&s.volumeSpikes)),
 				)
 				for name, e := range s.exchanges {
 					log.Info("stats",
