@@ -144,6 +144,28 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 	// Bybit V5: side = "Buy" | "Sell"
 	bySide := strings.Title(strings.ToLower(side)) //nolint:staticcheck
 
+	// При SELL запрашиваем фактический баланс монеты и продаём всё имеющееся,
+	// чтобы избежать ошибки "Insufficient balance" из-за расхождения netQty и реального баланса.
+	if strings.EqualFold(side, "sell") {
+		base := bybitBaseAsset(symbol)
+		actualBalance, err := fetchCoinBalance(ctx, c.http, c.baseURL, c.apiKey, c.secret, base, c.log)
+		if err != nil {
+			c.log.Warn("bybit: failed to fetch coin balance for sell, using passed qty",
+				zap.String("symbol", symbol),
+				zap.String("coin", base),
+				zap.Float64("fallback_qty", qty),
+				zap.Error(err),
+			)
+		} else {
+			c.log.Info("bybit: using actual balance for sell",
+				zap.String("coin", base),
+				zap.Float64("passed_qty", qty),
+				zap.Float64("actual_balance", actualBalance),
+			)
+			qty = actualBalance
+		}
+	}
+
 	fmtQty := formatQty(qty)
 	bodyMap := map[string]string{
 		"category":   "spot",

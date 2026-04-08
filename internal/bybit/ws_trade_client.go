@@ -208,6 +208,28 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 	
 	bySide := strings.Title(strings.ToLower(side)) //nolint:staticcheck
 
+	// При SELL запрашиваем фактический баланс монеты и продаём всё имеющееся,
+	// чтобы избежать ошибки "Insufficient balance" из-за расхождения netQty и реального баланса.
+	if strings.EqualFold(side, "sell") {
+		base := bybitBaseAsset(symbol)
+		actualBalance, err := fetchCoinBalance(ctx, c.http, c.restBaseURL, c.apiKey, c.secret, base, c.log)
+		if err != nil {
+			c.log.Warn("bybit ws trade: failed to fetch coin balance for sell, using passed qty",
+				zap.String("symbol", symbol),
+				zap.String("coin", base),
+				zap.Float64("fallback_qty", qty),
+				zap.Error(err),
+			)
+		} else {
+			c.log.Info("bybit ws trade: using actual balance for sell",
+				zap.String("coin", base),
+				zap.Float64("passed_qty", qty),
+				zap.Float64("actual_balance", actualBalance),
+			)
+			qty = actualBalance
+		}
+	}
+
 	fmtQty := formatQty(qty)
 	args := map[string]interface{}{
 		"category":   "spot",

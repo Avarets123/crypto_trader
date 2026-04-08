@@ -13,6 +13,77 @@ import (
 	"go.uber.org/zap"
 )
 
+// fetchCoinBalance запрашивает фактический баланс монеты через GET /v5/account/wallet-balance.
+// Возвращает walletBalance для указанной монеты.
+func fetchCoinBalance(ctx context.Context, httpClient *http.Client, baseURL, apiKey, secret, coin string, log *zap.Logger) (float64, error) {
+	query := fmt.Sprintf("accountType=UNIFIED&coin=%s", coin)
+
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	recvWindow := "5000"
+	signPayload := timestamp + apiKey + recvWindow + query
+	signature := signBybit(secret, signPayload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v5/account/wallet-balance?"+query, nil)
+	if err != nil {
+		return 0, fmt.Errorf("fetchCoinBalance: create request: %w", err)
+	}
+	req.Header.Set("X-BAPI-API-KEY", apiKey)
+	req.Header.Set("X-BAPI-TIMESTAMP", timestamp)
+	req.Header.Set("X-BAPI-SIGN", signature)
+	req.Header.Set("X-BAPI-RECV-WINDOW", recvWindow)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("fetchCoinBalance: request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	log.Debug("bybit: fetchCoinBalance response",
+		zap.String("coin", coin),
+		zap.ByteString("body", body),
+	)
+
+	var raw struct {
+		RetCode int    `json:"retCode"`
+		RetMsg  string `json:"retMsg"`
+		Result  struct {
+			List []struct {
+				Coin []struct {
+					Coin          string `json:"coin"`
+					WalletBalance string `json:"walletBalance"`
+				} `json:"coin"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, fmt.Errorf("fetchCoinBalance: unmarshal: %w", err)
+	}
+	if raw.RetCode != 0 {
+		return 0, fmt.Errorf("fetchCoinBalance: api error %d %s", raw.RetCode, raw.RetMsg)
+	}
+
+	if len(raw.Result.List) == 0 || len(raw.Result.List[0].Coin) == 0 {
+		return 0, fmt.Errorf("fetchCoinBalance: coin %s not found in response", coin)
+	}
+
+	for _, c := range raw.Result.List[0].Coin {
+		if strings.EqualFold(c.Coin, coin) {
+			bal, err := strconv.ParseFloat(c.WalletBalance, 64)
+			if err != nil {
+				return 0, fmt.Errorf("fetchCoinBalance: parse balance: %w", err)
+			}
+			log.Info("bybit: fetched coin balance",
+				zap.String("coin", coin),
+				zap.Float64("wallet_balance", bal),
+			)
+			return bal, nil
+		}
+	}
+
+	return 0, fmt.Errorf("fetchCoinBalance: coin %s not in list", coin)
+}
+
 // bybitBaseAsset извлекает базовый актив из символа (например, "SOLUSDT" → "SOL").
 func bybitBaseAsset(symbol string) string {
 	for _, quote := range []string{"USDT", "USDC", "BTC", "ETH"} {
