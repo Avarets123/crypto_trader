@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,10 +25,12 @@ var _ exchange.RestClient = (*WsTradeClient)(nil)
 // WsTradeClient реализует exchange.RestClient через Bybit Private WebSocket API.
 // Соединение аутентифицируется один раз при подключении.
 type WsTradeClient struct {
-	base    wsConn
-	apiKey  string
-	secret  string
-	log     *zap.Logger
+	base        wsConn
+	apiKey      string
+	secret      string
+	restBaseURL string
+	http        *http.Client
+	log         *zap.Logger
 
 	connMu  sync.RWMutex
 	conn    *websocket.Conn
@@ -72,12 +75,19 @@ func NewWsTradeClient(log *zap.Logger) *WsTradeClient {
 		zap.Bool("dev_mode", devMode),
 	)
 
+	restBaseURL := "https://api.bybit.com"
+	if devMode {
+		restBaseURL = "https://api-testnet.bybit.com"
+	}
+
 	return &WsTradeClient{
-		base:    wsConn{url: wsURL, log: log, maxWait: maxWait},
-		apiKey:  sharedconfig.GetEnv("BYBIT_API_KEY", ""),
-		secret:  sharedconfig.GetEnv("BYBIT_API_SECRET", ""),
-		log:     log,
-		pending: make(map[string]chan wsTradeResponse),
+		base:        wsConn{url: wsURL, log: log, maxWait: maxWait},
+		apiKey:      sharedconfig.GetEnv("BYBIT_API_KEY", ""),
+		secret:      sharedconfig.GetEnv("BYBIT_API_SECRET", ""),
+		restBaseURL: restBaseURL,
+		http:        &http.Client{Timeout: 10 * time.Second},
+		log:         log,
+		pending:     make(map[string]chan wsTradeResponse),
 	}
 }
 
@@ -196,14 +206,15 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 	)
 
 	
-	bySide := strings.Title(strings.ToLower(side)) 
+	bySide := strings.Title(strings.ToLower(side)) //nolint:staticcheck
 
+	fmtQty := formatQty(qty)
 	args := map[string]interface{}{
 		"category":   "spot",
 		"symbol":     symbol,
 		"side":       bySide,
 		"orderType":  "Market",
-		"qty":        formatQty(qty),
+		"qty":        fmtQty,
 		"marketUnit": "baseCoin",
 	}
 
@@ -222,11 +233,13 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 		return exchange.OrderResult{}, fmt.Errorf("bybit ws place order unmarshal: %w", err)
 	}
 
-	// Bybit WS не возвращает fills в ответе на создание ордера.
-	// Применяем приближение: комиссия 0.1% списывается из полученного базового актива при BUY.
-	netQty := qty
+	// Для BUY запрашиваем реальные executions, чтобы знать точный netQty после комиссии.
+	// Для SELL netQty не используется (продаём ровно столько, сколько было куплено).
+	execQty, _ := strconv.ParseFloat(fmtQty, 64)
+	netQty := execQty
 	if strings.EqualFold(side, "buy") {
-		netQty = qty * 0.999
+		fallback := execQty * 0.999
+		netQty = fetchNetQty(ctx, c.http, c.restBaseURL, c.apiKey, c.secret, symbol, raw.OrderID, fallback, c.log)
 	}
 
 	c.log.Info("bybit ws trade: order placed",

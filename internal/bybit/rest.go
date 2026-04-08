@@ -126,12 +126,13 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 	// Bybit V5: side = "Buy" | "Sell"
 	bySide := strings.Title(strings.ToLower(side)) //nolint:staticcheck
 
+	fmtQty := formatQty(qty)
 	bodyMap := map[string]string{
 		"category":   "spot",
 		"symbol":     symbol,
 		"side":       bySide,
 		"orderType":  "Market",
-		"qty":        formatQty(qty),
+		"qty":        fmtQty,
 		"marketUnit": "baseCoin",
 	}
 	bodyBytes, _ := json.Marshal(bodyMap)
@@ -165,11 +166,13 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 		return exchange.OrderResult{}, fmt.Errorf("bybit place market order api error: %d %s", raw.RetCode, raw.RetMsg)
 	}
 
-	// Bybit не возвращает fills в ответе на создание ордера.
-	// Применяем приближение: комиссия 0.1% списывается из полученного базового актива при BUY.
-	netQty := qty
+	// Для BUY запрашиваем реальные executions, чтобы знать точный netQty после комиссии.
+	// Для SELL netQty не используется (продаём всё, что было куплено).
+	execQty, _ := strconv.ParseFloat(fmtQty, 64)
+	netQty := execQty
 	if strings.EqualFold(side, "buy") {
-		netQty = qty * 0.999
+		fallback := execQty * 0.999
+		netQty = fetchNetQty(ctx, c.http, c.baseURL, c.apiKey, c.secret, symbol, raw.Result.OrderID, fallback, c.log)
 	}
 
 	c.log.Info("bybit: market order placed",
