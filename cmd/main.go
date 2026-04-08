@@ -12,7 +12,6 @@ import (
 
 	"github.com/osman/bot-traider/internal/binance"
 	"github.com/osman/bot-traider/internal/bybit"
-	"github.com/osman/bot-traider/internal/okx"
 	"github.com/osman/bot-traider/internal/shared/comparator"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
@@ -55,7 +54,6 @@ func main() {
 
 	binanceRest := binance.NewRestClient(ctx,log.With(zap.String("component", "binance-rest")))
 	bybitRest := bybit.NewRestClient(ctx,log.With(zap.String("component", "bybit-rest")))
-	okxRest := okx.NewRestClient(ctx,log.With(zap.String("component", "okx-rest")))
 
 
 
@@ -86,8 +84,7 @@ func main() {
 
 	restClients := map[string]exchange.RestClient{
 		"binance": binanceRest,
-		"bybit": bybitRest,
-		"okx": okxRest,
+		"bybit":   bybitRest,
 	}
 
 	tradeSvc := trade.NewService(
@@ -169,26 +166,11 @@ func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, ticke
 		log.Info("bybit disabled, skipping")
 	}
 
-	okxCfg := okx.LoadConfig()
-	log.Info("okx config loaded", zap.Bool("enabled", okxCfg.Enabled))
-	if okxCfg.Enabled {
-		log.Info("starting okx")
-		okxClient := okx.NewClient(okxCfg, log.With(zap.String("market", "okx")), st, tickerService)
-		go func() {
-			log.Info("okx goroutine started")
-			if err := okxClient.Run(ctx); err != nil {
-				log.Error("okx client stopped", zap.Error(err))
-			}
-		}()
-	} else {
-		log.Info("okx disabled, skipping")
-	}
-
 	binanceCfg := binance.LoadConfig()
 	log.Info("binance config loaded", zap.Bool("enabled", binanceCfg.Enabled))
 	if !binanceCfg.Enabled {
 		log.Info("binance disabled, skipping")
-		if !bybitCfg.Enabled && !okxCfg.Enabled {
+		if !bybitCfg.Enabled {
 			log.Warn("no exchanges enabled, bot will do nothing")
 		}
 		<-ctx.Done()

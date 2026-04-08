@@ -17,7 +17,7 @@ type Base struct {
 	PostgresDSN        string
 	SpreadThresholdPct float64
 	// WatchSymbols — зафиксированный список символов (Binance/Bybit формат, напр. BTCUSDT).
-	// Если пустой — символы берутся с биржи. Формат OKX (BTC-USDT) конвертируется автоматически.
+	// Если пустой — символы берутся с биржи.
 	WatchSymbols []string
 }
 
