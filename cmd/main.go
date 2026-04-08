@@ -55,6 +55,7 @@ func main() {
 
 	binanceRest := binance.NewRestClient(log.With(zap.String("component", "binance-rest")))
 	bybitRest := bybit.NewRestClient(log.With(zap.String("component", "bybit-rest")))
+	okxRest := okx.NewRestClient(log.With(zap.String("component", "okx-rest")))
 	log.Info("checking exchange api keys...")
 
 	binanceInfo, err := binanceRest.GetAccountInfo(ctx)
@@ -66,14 +67,28 @@ func main() {
 		zap.Int("balances_count", len(binanceInfo.Balances)),
 	)
 
-	bybitInfo, err := bybitRest.GetAccountInfo(ctx)
-	if err != nil {
-		log.Fatal("bybit api key invalid", zap.Error(err))
+	bybitAPIKey := sharedconfig.GetEnv("BYBIT_API_KEY", "")
+	if bybitAPIKey != "" {
+		bybitInfo, err := bybitRest.GetAccountInfo(ctx)
+		if err != nil {
+			log.Fatal("bybit api key invalid", zap.Error(err))
+		}
+		log.Info("bybit api key valid",
+			zap.String("account_type", bybitInfo.AccountType),
+			zap.Int("balances_count", len(bybitInfo.Balances)),
+		)
+	} else {
+		log.Info("bybit api key not set, skipping bybit trading")
 	}
-	log.Info("bybit api key valid",
-		zap.String("account_type", bybitInfo.AccountType),
-		zap.Int("balances_count", len(bybitInfo.Balances)),
-	)
+
+	okxAPIKey := sharedconfig.GetEnv("OKX_API_KEY", "")
+	if okxAPIKey != "" {
+		if err := okxRest.GetAccountInfo(ctx); err != nil {
+			log.Fatal("okx api key invalid", zap.Error(err))
+		}
+	} else {
+		log.Info("okx api key not set, skipping okx trading")
+	}
 
 	// --- Торговые клиенты (ws или rest) ---
 	binanceTradeMode := sharedconfig.GetEnv("BINANCE_TRADE_MODE", "ws")
@@ -90,22 +105,6 @@ func main() {
 	} else {
 		log.Info("binance trading via REST")
 		binanceTradeClient = binanceRest
-	}
-
-	bybitTradeMode := sharedconfig.GetEnv("BYBIT_TRADE_MODE", "ws")
-	log.Info("bybit trade mode", zap.String("mode", bybitTradeMode))
-	var bybitTradeClient exchange.RestClient
-	if bybitTradeMode == "ws" {
-		bybitWsTrade := bybit.NewWsTradeClient(log.With(zap.String("component", "bybit-ws-trade")))
-		go func() {
-			log.Info("bybit ws trade client started")
-			bybitWsTrade.Run(ctx)
-			log.Error("bybit ws trade client stopped")
-		}()
-		bybitTradeClient = bybitWsTrade
-	} else {
-		log.Info("bybit trading via REST")
-		bybitTradeClient = bybitRest
 	}
 
 	tgNotifier, tgAgg := initTg(ctx, log)
@@ -136,7 +135,27 @@ func main() {
 
 	restClients := map[string]exchange.RestClient{
 		"binance": binanceTradeClient,
-		"bybit":   bybitTradeClient,
+	}
+	if bybitAPIKey != "" {
+		bybitTradeMode := sharedconfig.GetEnv("BYBIT_TRADE_MODE", "ws")
+		log.Info("bybit trade mode", zap.String("mode", bybitTradeMode))
+		if bybitTradeMode == "ws" {
+			bybitWsTrade := bybit.NewWsTradeClient(log.With(zap.String("component", "bybit-ws-trade")))
+			go func() {
+				log.Info("bybit ws trade client started")
+				bybitWsTrade.Run(ctx)
+				log.Error("bybit ws trade client stopped")
+			}()
+			restClients["bybit"] = bybitWsTrade
+		} else {
+			log.Info("bybit trading via REST")
+			restClients["bybit"] = bybitRest
+		}
+		log.Info("bybit registered as trade client")
+	}
+	if okxAPIKey != "" {
+		restClients["okx"] = okxRest
+		log.Info("okx registered as trade client")
 	}
 
 
