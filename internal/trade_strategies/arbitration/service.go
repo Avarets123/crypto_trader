@@ -13,9 +13,6 @@ import (
 	"github.com/osman/bot-traider/internal/trade"
 )
 
-// const totalFeePct = 0.2 // суммарные комиссии Binance + Bybit (taker fee)
-const totalFeePct = 0 // суммарные комиссии Binance + Bybit (taker fee)
-
 // Executor реализует Lead-Lag арбитраж: сигнал от Binance, торговля на Bybit.
 type Service struct {
 	mu          sync.Mutex
@@ -66,7 +63,7 @@ func (s *Service) OnSpreadOpen(event *comparator.SpreadEvent) {
 	symbol := event.Symbol
 
 	// проверяем эффективный спред
-	effectiveSpread := event.MaxSpreadPct - totalFeePct
+	effectiveSpread := event.MaxSpreadPct
 	if effectiveSpread < s.cfg.MinSpreadPct {
 		s.log.Warn("arbitration order cancel: effective spread too small",
 			zap.String("symbol", symbol),

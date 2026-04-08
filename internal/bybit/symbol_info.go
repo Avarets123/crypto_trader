@@ -13,11 +13,31 @@ import (
 	"go.uber.org/zap"
 )
 
+// knownStepSizes — захардкоженные qtyStep для популярных USDT-пар Bybit spot.
+// Используются как начальное значение кеша и как fallback если REST-запрос не удался.
+var knownStepSizes = map[string]float64{
+	"BTCUSDT":  0.000001,
+	"ETHUSDT":  0.0001,
+	"SOLUSDT":  0.01,
+	"XRPUSDT":  0.1,
+	"ADAUSDT":  1,
+	"DOGEUSDT": 1,
+	"LTCUSDT":  0.001,
+}
+
 var (
-	stepSizeCache   = make(map[string]float64)
+	stepSizeCache   = initStepSizeCache()
 	stepSizeMu      sync.RWMutex
 	stepSizeBaseURL = "https://api.bybit.com"
 )
+
+func initStepSizeCache() map[string]float64 {
+	m := make(map[string]float64, len(knownStepSizes))
+	for k, v := range knownStepSizes {
+		m[k] = v
+	}
+	return m
+}
 
 // SetStepSizeBaseURL устанавливает базовый URL для запросов instruments-info (для testnet).
 func SetStepSizeBaseURL(baseURL string) {
