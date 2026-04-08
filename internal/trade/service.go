@@ -24,8 +24,9 @@ type Service struct {
 	clients      map[string]exchange.RestClient
 	repo         *TradeRepository
 	log          *zap.Logger
-	onTradeOpen  []func(*Trade)
-	onTradeClose []func(*Trade)
+	onTradeOpen       []func(*Trade)
+	onTradeClose      []func(*Trade)
+	onTradeCloseError []func(*Trade, error)
 }
 
 // WithOnTradeOpen регистрирует хук, вызываемый при открытии сделки.
@@ -36,6 +37,11 @@ func (m *Service) WithOnTradeOpen(fn func(*Trade)) {
 // WithOnTradeClose регистрирует хук, вызываемый при закрытии сделки.
 func (m *Service) WithOnTradeClose(fn func(*Trade)) {
 	m.onTradeClose = append(m.onTradeClose, fn)
+}
+
+// WithOnTradeCloseError регистрирует хук, вызываемый при ошибке закрытия ордера.
+func (m *Service) WithOnTradeCloseError(fn func(*Trade, error)) {
+	m.onTradeCloseError = append(m.onTradeCloseError, fn)
 }
 
 // New создаёт service.
@@ -178,7 +184,12 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 			zap.String("mode", m.mode),
 			zap.Error(err),
 		)
-		return fmt.Errorf("order close: %w", err)
+		closeErr := fmt.Errorf("order close: %w", err)
+		for _, fn := range m.onTradeCloseError {
+			fn := fn
+			go fn(trade, closeErr)
+		}
+		return closeErr
 	}
 	exitOrderID := result.OrderID
 	if result.Price > 0 {

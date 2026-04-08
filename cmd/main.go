@@ -150,6 +150,7 @@ func main() {
 	tradeNotif := newTradeNotifier(ctx, tgNotifier, log.With(zap.String("component", "trade-notifier")))
 	tradeSvc.WithOnTradeOpen(tradeNotif.OnTradeOpen)
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
+	tradeSvc.WithOnTradeCloseError(tradeNotif.OnTradeCloseError)
 
 	// --- Lead-Lag Arb Executor ---
 	arbCfg := arbitration.LoadConfig()

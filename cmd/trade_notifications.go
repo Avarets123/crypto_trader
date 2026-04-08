@@ -36,6 +36,13 @@ func (n *tradeNotifier) OnTradeClose(t *trade.Trade) {
 	n.notifier.Send(n.ctx, msg)
 }
 
+// OnTradeCloseError — хук для trade.Service.WithOnTradeCloseError.
+func (n *tradeNotifier) OnTradeCloseError(t *trade.Trade, err error) {
+	msg := formatTradeCloseErrorMsg(t, err)
+	n.log.Debug("trade notifier: sending close error notification", zap.String("symbol", t.Symbol), zap.Error(err))
+	n.notifier.Send(n.ctx, msg)
+}
+
 func formatTradeOpenMsg(t *trade.Trade) string {
 	var sb strings.Builder
 	sb.WriteString("🟢 <b>Сделка открыта</b>\n")
@@ -68,6 +75,18 @@ func formatTradeCloseMsg(t *trade.Trade) string {
 	if t.PnlUSDT != nil {
 		fmt.Fprintf(&sb, "PnL: <b>%s USDT</b>\n", formatPnl(*t.PnlUSDT))
 	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func formatTradeCloseErrorMsg(t *trade.Trade, err error) string {
+	var sb strings.Builder
+	sb.WriteString("⚠️ <b>Ошибка закрытия ордера</b>\n")
+	fmt.Fprintf(&sb, "Стратегия: %s\n", strategyLabel(t.Strategy))
+	fmt.Fprintf(&sb, "Символ:   <b>%s</b>\n", t.Symbol)
+	fmt.Fprintf(&sb, "Биржа:    %s [%s]\n", t.TradeExchange, t.Mode)
+	fmt.Fprintf(&sb, "Количество: %s\n", formatQty(t.Qty))
+	fmt.Fprintf(&sb, "Цена входа: %s\n", formatPrice(t.EntryPrice))
+	fmt.Fprintf(&sb, "Ошибка: <code>%s</code>\n", err.Error())
 	return strings.TrimRight(sb.String(), "\n")
 }
 
