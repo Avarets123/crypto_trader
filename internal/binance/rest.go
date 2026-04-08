@@ -44,7 +44,7 @@ type RestClient struct {
 
 // NewRestClient создаёт RestClient.
 // Если DEV_MODE=true — использует testnet.
-func NewRestClient(log *zap.Logger) *RestClient {
+func NewRestClient(ctx context.Context, log *zap.Logger) *RestClient {
 	devMode := sharedconfig.GetEnv("DEV_MODE", "false") == "true"
 	baseURL := "https://api.binance.com"
 	if devMode {
@@ -55,13 +55,28 @@ func NewRestClient(log *zap.Logger) *RestClient {
 		zap.String("base_url", baseURL),
 		zap.Bool("dev_mode", devMode),
 	)
-	return &RestClient{
+
+	binance := &RestClient{
 		baseURL: baseURL,
 		apiKey:  sharedconfig.GetEnv("BINANCE_API_KEY", ""),
 		secret:  sharedconfig.GetEnv("BINANCE_API_SECRET", ""),
 		http:    &http.Client{Timeout: 10 * time.Second},
 		log:     log,
 	}
+
+
+	log.Info("checking binance exchange api keys...")
+
+	binanceInfo, err := binance.GetAccountInfo(ctx)
+	if err != nil {
+		log.Fatal("binance api key invalid", zap.Error(err))
+	}
+	log.Info("binance api key valid",
+		zap.String("account_type", binanceInfo.AccountType),
+		zap.Int("balances_count", len(binanceInfo.Balances)),
+	)
+
+	return binance
 }
 
 // GetAccountInfo возвращает информацию об аккаунте (GET /api/v3/account).

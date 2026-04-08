@@ -39,7 +39,7 @@ type RestClient struct {
 
 // NewRestClient создаёт RestClient, читая конфиг из env.
 // При DEV_MODE=true добавляет заголовок x-simulated-trading: 1.
-func NewRestClient(log *zap.Logger) *RestClient {
+func NewRestClient(ctx context.Context,log *zap.Logger) *RestClient {
 	devMode := sharedconfig.GetEnv("DEV_MODE", "false") == "true"
 	baseURL := "https://www.okx.com"
 
@@ -48,7 +48,7 @@ func NewRestClient(log *zap.Logger) *RestClient {
 		zap.Bool("dev_mode", devMode),
 	)
 
-	return &RestClient{
+	okx := &RestClient{
 		baseURL:    baseURL,
 		apiKey:     sharedconfig.GetEnv("OKX_API_KEY", ""),
 		secret:     sharedconfig.GetEnv("OKX_API_SECRET", ""),
@@ -57,6 +57,18 @@ func NewRestClient(log *zap.Logger) *RestClient {
 		http:       &http.Client{Timeout: 10 * time.Second},
 		log:        log,
 	}
+
+
+		okxAPIKey := sharedconfig.GetEnv("OKX_API_KEY", "")
+	if okxAPIKey != "" {
+		if err := okx.GetAccountInfo(ctx); err != nil {
+			log.Fatal("okx api key invalid", zap.Error(err))
+		}
+	} else {
+		log.Info("okx api key not set, skipping okx trading")
+	}
+
+	return okx
 }
 
 // GetAccountInfo проверяет ключи и логирует балансы (GET /api/v5/account/balance).

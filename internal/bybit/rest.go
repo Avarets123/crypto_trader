@@ -43,7 +43,7 @@ type RestClient struct {
 
 // NewRestClient создаёт RestClient.
 // Если DEV_MODE=true — использует testnet.
-func NewRestClient(log *zap.Logger) *RestClient {
+func NewRestClient(ctx context.Context,log *zap.Logger) *RestClient {
 	devMode := sharedconfig.GetEnv("DEV_MODE", "false") == "true"
 	baseURL := "https://api.bybit.com"
 	if devMode {
@@ -53,13 +53,31 @@ func NewRestClient(log *zap.Logger) *RestClient {
 		zap.String("base_url", baseURL),
 		zap.Bool("dev_mode", devMode),
 	)
-	return &RestClient{
+	bybit := &RestClient{
 		baseURL: baseURL,
 		apiKey:  sharedconfig.GetEnv("BYBIT_API_KEY", ""),
 		secret:  sharedconfig.GetEnv("BYBIT_API_SECRET", ""),
 		http:    &http.Client{Timeout: 10 * time.Second},
 		log:     log,
 	}
+
+
+		bybitAPIKey := sharedconfig.GetEnv("BYBIT_API_KEY", "")
+	if bybitAPIKey != "" {
+		bybitInfo, err := bybit.GetAccountInfo(ctx)
+		if err != nil {
+			log.Fatal("bybit api key invalid", zap.Error(err))
+		}
+		log.Info("bybit api key valid",
+			zap.String("account_type", bybitInfo.AccountType),
+			zap.Int("balances_count", len(bybitInfo.Balances)),
+		)
+	} else {
+		log.Info("bybit api key not set, skipping bybit trading")
+	}
+
+
+	return bybit
 }
 
 // GetAccountInfo возвращает информацию об аккаунте (GET /v5/account/wallet-balance).
