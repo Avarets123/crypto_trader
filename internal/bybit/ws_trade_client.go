@@ -79,6 +79,7 @@ func NewWsTradeClient(log *zap.Logger) *WsTradeClient {
 	if devMode {
 		restBaseURL = "https://api-testnet.bybit.com"
 	}
+	SetStepSizeBaseURL(restBaseURL)
 
 	return &WsTradeClient{
 		base:        wsConn{url: wsURL, log: log, maxWait: maxWait},
@@ -230,7 +231,8 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 		}
 	}
 
-	fmtQty := formatQty(qty)
+	step := getStepSize(ctx, symbol, c.log)
+	fmtQty := formatQtyWithStep(qty, step)
 	args := map[string]interface{}{
 		"category":   "spot",
 		"symbol":     symbol,

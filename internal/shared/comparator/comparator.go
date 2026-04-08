@@ -193,6 +193,12 @@ func (c *PriceComparator) checkSpread(sp *symbolPrices, symbol string, prices ma
 						PriceLow:     pLow,
 					}
 					sp.activeSpreads[key] = event
+					// Ставим actionOpen в очередь ДО снятия мьютекса, чтобы исключить
+					// гонку: другая горутина не сможет поставить actionClose для этого же
+					// event раньше, чем actionOpen попадёт в канал.
+					if c.events != nil {
+						c.enqueue(spreadAction{kind: actionOpen, event: event})
+					}
 					sp.mu.Unlock()
 
 					c.log.Warn("spread opened",
@@ -205,9 +211,6 @@ func (c *PriceComparator) checkSpread(sp *symbolPrices, symbol string, prices ma
 					)
 					for _, fn := range c.onSpreadOpenListeners {
 						fn(event)
-					}
-					if c.events != nil {
-						c.enqueue(spreadAction{kind: actionOpen, event: event})
 					}
 				} else if absSpread > active.MaxSpreadPct {
 					active.MaxSpreadPct = absSpread

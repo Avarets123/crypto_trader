@@ -53,6 +53,7 @@ func NewRestClient(ctx context.Context,log *zap.Logger) *RestClient {
 		zap.String("base_url", baseURL),
 		zap.Bool("dev_mode", devMode),
 	)
+	SetStepSizeBaseURL(baseURL)
 	bybit := &RestClient{
 		baseURL: baseURL,
 		apiKey:  sharedconfig.GetEnv("BYBIT_API_KEY", ""),
@@ -166,7 +167,8 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 		}
 	}
 
-	fmtQty := formatQty(qty)
+	step := getStepSize(ctx, symbol, c.log)
+	fmtQty := formatQtyWithStep(qty, step)
 	bodyMap := map[string]string{
 		"category":   "spot",
 		"symbol":     symbol,

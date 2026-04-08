@@ -13,7 +13,8 @@ import (
 	"github.com/osman/bot-traider/internal/trade"
 )
 
-const totalFeePct = 0.2 // суммарные комиссии Binance + Bybit (taker fee)
+// const totalFeePct = 0.2 // суммарные комиссии Binance + Bybit (taker fee)
+const totalFeePct = 0 // суммарные комиссии Binance + Bybit (taker fee)
 
 // Executor реализует Lead-Lag арбитраж: сигнал от Binance, торговля на Bybit.
 type Service struct {
