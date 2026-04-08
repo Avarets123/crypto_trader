@@ -17,6 +17,7 @@ type ArbPosition struct {
 	Qty            float64
 	OpenedAt       time.Time
 	PriceCh        chan float64
+	SpreadClosedCh chan struct{} // закрывается когда схлопывается спред
 }
 
 // PositionTracker хранит активные позиции в памяти.

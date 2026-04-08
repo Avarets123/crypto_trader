@@ -101,7 +101,7 @@ func (s *Service) OnSpreadOpen(event *comparator.SpreadEvent) {
 	stopLoss := entryPrice * (1 - s.cfg.StopLossPct/100)
 
 	//взять из конфига
-	qty := s.CalcQty(entryPrice, 10)
+	qty := s.CalcQty(entryPrice, s.cfg.TradeAmount)
 
 	if qty <= 0 {
 		s.log.Warn("arbitration: qty is zero", zap.String("symbol", symbol))
@@ -149,20 +149,39 @@ func (s *Service) OnSpreadOpen(event *comparator.SpreadEvent) {
 
 	// регистрируем позицию для мониторинга
 	pos := &ArbPosition{
-		ID:            id,
-		Symbol:        symbol,
-		TradeExchange: tradeExchange,
-		SignalExchange: signalExchange,
-		EntryPrice:    entryPrice,
-		TargetPrice:   targetPrice,
-		StopLosPrice:  stopLoss,
-		Qty:           qty,
-		OpenedAt:      time.Now(),
-		PriceCh:       make(chan float64, 20),
+		ID:             id,
+		Symbol:         symbol,
+		TradeExchange:  tradeExchange,
+		SignalExchange:  signalExchange,
+		EntryPrice:     entryPrice,
+		TargetPrice:    targetPrice,
+		StopLosPrice:   stopLoss,
+		Qty:            qty,
+		OpenedAt:       time.Now(),
+		PriceCh:        make(chan float64, 20),
+		SpreadClosedCh: make(chan struct{}),
 	}
 	s.tracker.Add(pos)
 
 	go s.watchArb(pos)
+}
+
+// OnSpreadClose вызывается comparator когда спред закрывается.
+// Если по данному символу есть открытая позиция — сигнализирует watchArb завершить её.
+func (s *Service) OnSpreadClose(event *comparator.SpreadEvent) {
+	pos, ok := s.tracker.GetBySymbol(event.Symbol)
+	if !ok {
+		return
+	}
+	s.log.Info("arbitration: spread closed signal received, closing position",
+		zap.String("symbol", event.Symbol),
+		zap.Int64("id", pos.ID),
+	)
+	select {
+	case <-pos.SpreadClosedCh: // уже закрыт
+	default:
+		close(pos.SpreadClosedCh)
+	}
 }
 
 // OnTicker получает тикеры и направляет цену активным позициям по нужной бирже.
@@ -206,6 +225,14 @@ func (s *Service) watchArb(pos *ArbPosition) {
 	for {
 		select {
 		case <-s.ctx.Done():
+			return
+
+		case <-pos.SpreadClosedCh:
+			s.log.Info("arbitration: spread converged, closing position",
+				zap.Int64("id", pos.ID),
+				zap.String("symbol", pos.Symbol),
+			)
+			s.closePosition(pos, pos.EntryPrice, "spread_closed")
 			return
 
 		case <-timeout.C:

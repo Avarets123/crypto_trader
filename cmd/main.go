@@ -107,6 +107,7 @@ func main() {
 	if arbCfg.Enabled {
 		arbSvc := arbitration.New(ctx, arbCfg, tradeSvc, log.With(zap.String("component", "arb-executor")))
 		cmp.WithOnSpreadOpenEvent(arbSvc.OnSpreadOpen)
+		cmp.WithOnSpreadCloseEvent(arbSvc.OnSpreadClose)
 		tickerService.WithOnSend(arbSvc.OnTicker)
 		log.Info("arbitration strategy enabled",
 			zap.Float64("min_spread_pct", arbCfg.MinSpreadPct),

@@ -221,13 +221,18 @@ func (c *WsTradeClient) PlaceMarketOrder(ctx context.Context, symbol, side strin
 				zap.Float64("fallback_qty", qty),
 				zap.Error(err),
 			)
-		} else {
+		} else if actualBalance > 0 {
 			c.log.Info("bybit ws trade: using actual balance for sell",
 				zap.String("coin", base),
 				zap.Float64("passed_qty", qty),
 				zap.Float64("actual_balance", actualBalance),
 			)
 			qty = actualBalance
+		} else {
+			c.log.Warn("bybit ws trade: fetched balance is zero, falling back to trade qty",
+				zap.String("coin", base),
+				zap.Float64("fallback_qty", qty),
+			)
 		}
 	}
 

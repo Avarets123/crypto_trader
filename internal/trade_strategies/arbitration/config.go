@@ -9,6 +9,7 @@ type Config struct {
 	CooldownSec  int     // ARB_COOLDOWN_SEC=60
 	MaxHoldSec   int     // ARB_MAX_HOLD_SEC=300
 	StopLossPct  float64 // ARB_STOP_LOSS_PCT=0.5
+	TradeAmount float64
 }
 
 // LoadConfig читает конфиг из env.
@@ -19,5 +20,6 @@ func LoadConfig() Config {
 		CooldownSec:  sharedconfig.GetEnvInt("ARB_COOLDOWN_SEC", 60),
 		MaxHoldSec:   sharedconfig.GetEnvInt("ARB_MAX_HOLD_SEC", 300),
 		StopLossPct:  sharedconfig.GetEnvFloat("ARB_STOP_LOSS_PCT", 0.5),
+		TradeAmount: sharedconfig.GetEnvFloat("TRADE_AMOUNT_USDT", 10),
 	}
 }

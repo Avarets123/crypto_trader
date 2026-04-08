@@ -22,11 +22,15 @@ func formatQty(qty float64) string {
 
 // formatQtyWithStep форматирует количество с учётом qtyStep биржи.
 // Округляет вниз до ближайшего кратного stepSize.
+// Если qty после округления равен 0 (qty < stepSize), использует один шаг.
 func formatQtyWithStep(qty, stepSize float64) string {
 	if stepSize <= 0 {
 		return formatQty(qty)
 	}
 	floored := math.Floor(qty/stepSize) * stepSize
+	if floored <= 0 {
+		floored = stepSize
+	}
 	decimals := stepSizeDecimals(stepSize)
 	return strconv.FormatFloat(floored, 'f', decimals, 64)
 }
