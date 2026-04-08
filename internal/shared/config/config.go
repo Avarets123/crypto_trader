@@ -4,17 +4,21 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 // Base — общие настройки для всех бирж.
 type Base struct {
-	LogLevel            string
-	MaxWait             time.Duration
-	SymbolRefreshMin    int
-	DevMode             bool
-	PostgresDSN         string
-	SpreadThresholdPct  float64
+	LogLevel           string
+	MaxWait            time.Duration
+	SymbolRefreshMin   int
+	DevMode            bool
+	PostgresDSN        string
+	SpreadThresholdPct float64
+	// WatchSymbols — зафиксированный список символов (Binance/Bybit формат, напр. BTCUSDT).
+	// Если пустой — символы берутся с биржи. Формат OKX (BTC-USDT) конвертируется автоматически.
+	WatchSymbols []string
 }
 
 // LoadBase читает общий конфиг из переменных окружения.
@@ -31,6 +35,7 @@ func LoadBase() Base {
 		DevMode:            GetEnv("DEV_MODE", "false") == "true",
 		PostgresDSN:        postgresDSN,
 		SpreadThresholdPct: GetEnvFloat("SPREAD_THRESHOLD_PCT", 1.0),
+		WatchSymbols:       GetEnvStringSlice("WATCH_SYMBOLS"),
 	}
 }
 
@@ -70,4 +75,21 @@ func GetEnvBool(key string, fallback bool) bool {
 		}
 	}
 	return fallback
+}
+
+// GetEnvStringSlice парсит переменную окружения как список строк через запятую.
+// Возвращает nil если переменная не задана или пуста.
+func GetEnvStringSlice(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	var result []string
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			result = append(result, s)
+		}
+	}
+	return result
 }

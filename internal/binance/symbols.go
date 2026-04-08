@@ -57,15 +57,18 @@ type SymbolWatcher struct {
 	logger   *zap.Logger
 	interval time.Duration
 	restURL  string
+	pinned   []string // если непустой — используются вместо REST-запроса
 	current  []string
 	mu       sync.RWMutex
 	onChange func(added []string, removed []string, all []string)
 }
 
 // NewSymbolWatcher создаёт новый SymbolWatcher.
+// pinned — фиксированный список символов; если nil/пустой — символы берутся с биржи.
 func NewSymbolWatcher(
 	interval time.Duration,
 	restURL string,
+	pinned []string,
 	log *zap.Logger,
 	onChange func(added, removed, all []string),
 ) *SymbolWatcher {
@@ -73,14 +76,21 @@ func NewSymbolWatcher(
 		logger:   log,
 		interval: interval,
 		restURL:  restURL,
+		pinned:   pinned,
 		onChange: onChange,
 	}
 }
 
-// Run запускает watcher: первый fetch сразу, затем по тикеру. Блокирует до ctx.Done().
+// Run запускает watcher: первый fetch сразу, затем по тикеру (только при динамическом режиме).
 func (w *SymbolWatcher) Run(ctx context.Context) error {
 	if err := w.refresh(ctx); err != nil {
 		w.logger.Error("initial symbol fetch failed", zap.Error(err))
+	}
+
+	if len(w.pinned) > 0 {
+		// Список зафиксирован — периодическое обновление не нужно.
+		<-ctx.Done()
+		return ctx.Err()
 	}
 
 	ticker := time.NewTicker(w.interval)
@@ -100,12 +110,18 @@ func (w *SymbolWatcher) Run(ctx context.Context) error {
 
 // refresh получает символы и сравнивает с текущим списком.
 func (w *SymbolWatcher) refresh(ctx context.Context) error {
-	symbols, err := fetchSymbolsByQuote(ctx, w.restURL, "USDT")
-	if err != nil {
-		return err
+	var symbols []string
+	if len(w.pinned) > 0 {
+		symbols = blacklist.FilterSymbols(w.pinned)
+		w.logger.Info("using pinned symbols", zap.Int("count", len(symbols)))
+	} else {
+		var err error
+		symbols, err = fetchSymbolsByQuote(ctx, w.restURL, "USDT")
+		if err != nil {
+			return err
+		}
+		symbols = blacklist.FilterSymbols(symbols)
 	}
-
-	symbols = blacklist.FilterSymbols(symbols)
 
 	w.mu.Lock()
 	old := w.current

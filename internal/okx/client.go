@@ -38,7 +38,7 @@ func NewClient(cfg *Config, log *zap.Logger, st *stats.Stats, svc *ticker.Ticker
 // Run запускает SymbolWatcher и управляет соединениями до ctx.Done().
 func (c *Client) Run(ctx context.Context) error {
 	interval := time.Duration(c.config.SymbolRefreshMin) * time.Minute
-	watcher := NewSymbolWatcher(interval, c.config.RestURL, c.logger, c.onSymbolsChanged)
+	watcher := NewSymbolWatcher(interval, c.config.RestURL, c.config.WatchSymbols, c.logger, c.onSymbolsChanged)
 	return watcher.Run(ctx)
 }
 

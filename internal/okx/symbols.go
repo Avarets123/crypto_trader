@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,15 +48,19 @@ type SymbolWatcher struct {
 	logger   *zap.Logger
 	interval time.Duration
 	restURL  string
+	pinned   []string // если непустой — используются вместо REST-запроса (в формате OKX BTC-USDT)
 	current  []string
 	mu       sync.RWMutex
 	onChange func(added, removed, all []string)
 }
 
 // NewSymbolWatcher создаёт новый SymbolWatcher.
+// pinned — фиксированный список символов в формате Binance (BTCUSDT); автоматически конвертируется в OKX-формат (BTC-USDT).
+// Если nil/пустой — символы берутся с биржи.
 func NewSymbolWatcher(
 	interval time.Duration,
 	restURL string,
+	pinned []string,
 	log *zap.Logger,
 	onChange func(added, removed, all []string),
 ) *SymbolWatcher {
@@ -63,14 +68,38 @@ func NewSymbolWatcher(
 		logger:   log,
 		interval: interval,
 		restURL:  restURL,
+		pinned:   convertToOKXFormat(pinned),
 		onChange: onChange,
 	}
 }
 
-// Run запускает watcher: первый fetch сразу, затем по тикеру. Блокирует до ctx.Done().
+// convertToOKXFormat конвертирует символы из Binance-формата (BTCUSDT) в OKX-формат (BTC-USDT).
+func convertToOKXFormat(symbols []string) []string {
+	if len(symbols) == 0 {
+		return symbols
+	}
+	result := make([]string, 0, len(symbols))
+	for _, s := range symbols {
+		if strings.HasSuffix(s, "USDT") && !strings.Contains(s, "-") {
+			base := s[:len(s)-4]
+			result = append(result, base+"-USDT")
+		} else {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// Run запускает watcher: первый fetch сразу, затем по тикеру (только при динамическом режиме).
 func (w *SymbolWatcher) Run(ctx context.Context) error {
 	if err := w.refresh(ctx); err != nil {
 		w.logger.Error("initial symbol fetch failed", zap.Error(err))
+	}
+
+	if len(w.pinned) > 0 {
+		// Список зафиксирован — периодическое обновление не нужно.
+		<-ctx.Done()
+		return ctx.Err()
 	}
 
 	ticker := time.NewTicker(w.interval)
@@ -90,12 +119,18 @@ func (w *SymbolWatcher) Run(ctx context.Context) error {
 
 // refresh получает символы и сравнивает с текущим списком.
 func (w *SymbolWatcher) refresh(ctx context.Context) error {
-	symbols, err := fetchSymbolsByQuote(ctx, w.restURL, "USDT")
-	if err != nil {
-		return err
+	var symbols []string
+	if len(w.pinned) > 0 {
+		symbols = blacklist.FilterSymbols(w.pinned)
+		w.logger.Info("using pinned symbols", zap.Int("count", len(symbols)))
+	} else {
+		var err error
+		symbols, err = fetchSymbolsByQuote(ctx, w.restURL, "USDT")
+		if err != nil {
+			return err
+		}
+		symbols = blacklist.FilterSymbols(symbols)
 	}
-
-	symbols = blacklist.FilterSymbols(symbols)
 
 	w.mu.Lock()
 	old := w.current
