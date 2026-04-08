@@ -105,15 +105,8 @@ func (d *VolumeDetector) getOrCreateVolume(key string) *volumeState {
 
 // Update обновляет скользящее окно объёмов и проверяет на аномальность.
 func (d *VolumeDetector) Update(t ticker.Ticker) {
-	d.log.Debug("volume detector: ticker received",
-		zap.String("symbol", t.Symbol),
-		zap.String("exchange", t.Exchange),
-		zap.String("volume24h", t.Volume24h),
-		zap.String("price", t.Price),
-	)
-
 	price, err := strconv.ParseFloat(t.Price, 64)
-	if err != nil || price <= 0 {
+	if err != nil {
 		d.log.Warn("volume detector: failed to parse price",
 			zap.String("symbol", t.Symbol),
 			zap.String("price", t.Price),
@@ -121,9 +114,12 @@ func (d *VolumeDetector) Update(t ticker.Ticker) {
 		)
 		return
 	}
+	if price <= 0 {
+		return
+	}
 
 	baseVolume, err := strconv.ParseFloat(t.Volume24h, 64)
-	if err != nil || baseVolume <= 0 {
+	if err != nil {
 		d.log.Warn("volume detector: failed to parse volume24h",
 			zap.String("symbol", t.Symbol),
 			zap.String("volume24h", t.Volume24h),
@@ -131,16 +127,14 @@ func (d *VolumeDetector) Update(t ticker.Ticker) {
 		)
 		return
 	}
+	if baseVolume <= 0 {
+		// нулевой объём — монета не торгуется, пропускаем без лишнего шума
+		return
+	}
 
 	volumeUSDT := baseVolume * price
 
 	if volumeUSDT < d.cfg.VolumeMinUSDT {
-		d.log.Debug("volume detector: skip low volume",
-			zap.String("symbol", t.Symbol),
-			zap.String("exchange", t.Exchange),
-			zap.Float64("volume_usdt", volumeUSDT),
-			zap.Float64("min_usdt", d.cfg.VolumeMinUSDT),
-		)
 		return
 	}
 
@@ -158,11 +152,6 @@ func (d *VolumeDetector) Update(t ticker.Ticker) {
 	s.mu.Unlock()
 
 	if n < 2 {
-		d.log.Debug("volume detector: not enough data",
-			zap.String("symbol", t.Symbol),
-			zap.String("exchange", t.Exchange),
-			zap.Int("window_len", n),
-		)
 		return
 	}
 
@@ -180,21 +169,9 @@ func (d *VolumeDetector) Update(t ticker.Ticker) {
 
 	spikeRatio := volumeUSDT / avgVolume
 
-	d.log.Debug("volume detector: ratio calculated",
-		zap.String("symbol", t.Symbol),
-		zap.String("exchange", t.Exchange),
-		zap.Float64("spike_ratio", spikeRatio),
-		zap.Float64("volume_usdt", volumeUSDT),
-		zap.Float64("avg_volume_usdt", avgVolume),
-	)
 
 	if spikeRatio < d.cfg.VolumeSpikeRatio {
-		d.log.Debug("volume detector: no spike",
-			zap.String("symbol", t.Symbol),
-			zap.String("exchange", t.Exchange),
-			zap.Float64("spike_ratio", spikeRatio),
-			zap.Float64("threshold", d.cfg.VolumeSpikeRatio),
-		)
+
 		return
 	}
 

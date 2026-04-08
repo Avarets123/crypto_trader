@@ -114,13 +114,6 @@ func (a *Aggregator) add(e Event) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.log.Debug("aggregator: event added",
-		zap.String("type", string(e.Type)),
-		zap.String("symbol", e.Symbol),
-		zap.String("exchange", e.Exchange),
-		zap.Float64("change_pct", e.ChangePct),
-	)
-
 	a.buf = append(a.buf, e)
 
 	// таймер запускается только при первом событии в окне
@@ -142,7 +135,6 @@ func (a *Aggregator) flush() {
 		return
 	}
 
-	a.log.Info("aggregator: flushing events", zap.Int("count", len(events)))
 	a.notifier.Send(a.ctx, formatSummary(events))
 }
 
@@ -230,13 +222,13 @@ func formatSummary(events []Event) string {
 		}
 	}
 
-	// if len(spreads) > 0 {
-	// 	sb.WriteString(fmt.Sprintf("\n⚡ <b>SPREAD</b> (%d):\n", len(spreads)))
-	// 	for _, e := range spreads {
-	// 		sb.WriteString(fmt.Sprintf("  • %s  <b>%.2f%%</b>  %s → %s\n",
-	// 			e.Symbol, e.ChangePct, e.Exchange, e.Exchange2))
-	// 	}
-	// }
+	if len(spreads) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⚡ <b>SPREAD</b> (%d):\n", len(spreads)))
+		for _, e := range spreads {
+			sb.WriteString(fmt.Sprintf("  • %s  <b>%.2f%%</b>  %s → %s\n",
+				e.Symbol, e.ChangePct, e.Exchange, e.Exchange2))
+		}
+	}
 
 	return strings.TrimRight(sb.String(), "\n")
 }
