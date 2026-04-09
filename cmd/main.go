@@ -164,6 +164,7 @@ func main() {
 				zap.String("exchange", gridCfg.Exchange))
 		}
 		gridSvc := grid.NewService(gridCfg, gridClient, log.With(zap.String("component", "grid")), tgNotifier)
+		gridSvc.WithRepository(grid.NewGridRepository(pool))
 		gridSvc.Start(ctx)
 		tickerService.WithOnSend(gridSvc.OnTicker)
 		log.Info("grid strategy enabled", zap.Strings("symbols", gridCfg.Symbols))

@@ -1,15 +1,20 @@
 package grid
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // GridLevel — один уровень сетки.
 type GridLevel struct {
-	Index    int
-	Price    float64
-	OrderID  string    // ID активного ордера на бирже
-	Side     string    // "buy" или "sell"
-	Filled   bool
-	FilledAt time.Time
+	Index         int
+	Price         float64
+	OrderID       string    // ID активного ордера на бирже
+	FilledOrderID string    // ID исполненного ордера (сохраняется после очистки OrderID)
+	Side          string    // "buy" или "sell"
+	Filled        bool
+	FilledAt      time.Time
 }
 
 // GridState — состояние сетки для одного символа.
@@ -25,8 +30,9 @@ type GridState struct {
 	Active       bool
 	CurrentPrice float64
 	PriceCh      chan float64 // канал цен от OnTicker для watchGrid
+	SessionID    uuid.UUID    // уникальный ID сессии, генерируется при startGrid
 
 	// Статистика прибыли
-	TotalPnL    float64 // накопленный реализованный PnL за сессию (USDT)
-	FilledCycles int    // количество завершённых циклов buy→sell
+	TotalPnL     float64 // накопленный реализованный PnL за сессию (USDT)
+	FilledCycles int     // количество завершённых циклов buy→sell
 }

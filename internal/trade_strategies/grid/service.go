@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/shared/exchange"
@@ -25,6 +26,7 @@ type Service struct {
 	tracker  *GridTracker
 	notifier *telegram.Notifier
 	log      *zap.Logger
+	repo     *GridRepository // nil если persistence не настроена
 }
 
 // NewService создаёт Service.
@@ -55,6 +57,11 @@ func NewService(cfg Config, client exchange.RestClient, log *zap.Logger, notifie
 		notifier: notifier,
 		log:      log,
 	}
+}
+
+// WithRepository подключает GridRepository для сохранения исполненных ордеров.
+func (s *Service) WithRepository(repo *GridRepository) {
+	s.repo = repo
 }
 
 // Start проверяет баланс и инициализирует placeholders для символов.
@@ -233,6 +240,7 @@ func (s *Service) startGrid(ctx context.Context, symbol string, currentPrice flo
 	state.QtyPerLevel = qty
 	state.StartedAt = time.Now()
 	state.CurrentPrice = currentPrice
+	state.SessionID = uuid.New()
 	s.mu.Unlock()
 
 	// Считаем сколько уровней buy будет размещено
@@ -352,6 +360,7 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 	side := level.Side
 	level.Filled = true
 	level.FilledAt = time.Now()
+	level.FilledOrderID = level.OrderID
 	level.OrderID = ""
 
 	pnl := 0.0
@@ -431,6 +440,30 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 	case "sell":
 		PlaceBuyOrder(ctx, state, level, s.client, s.log)
 	}
+
+	// Сохраняем исполненный ордер в БД асинхронно (ошибка не блокирует торговлю)
+		rec := GridOrderRecord{
+			SessionID:  state.SessionID,
+			Symbol:     state.Symbol,
+			Exchange:   s.cfg.Exchange,
+			Side:       side,
+			LevelIndex: level.Index,
+			Price:      level.Price,
+			Qty:        state.QtyPerLevel,
+			OrderID:    level.FilledOrderID,
+		}
+		if side == "sell" {
+			rec.CyclePnlUSDT = &pnl
+		}
+		go func(r GridOrderRecord) {
+			if err := s.repo.SaveFilledOrder(context.Background(), r); err != nil {
+				s.log.Warn("grid: failed to save order",
+					zap.Error(err),
+					zap.String("symbol", r.Symbol),
+					zap.String("order_id", r.OrderID),
+				)
+			}
+		}(rec)
 }
 
 // emergencyClose аварийно закрывает все позиции по стоп-лоссу.
