@@ -98,7 +98,6 @@ func (s *Service) Start(ctx context.Context) {
 			PriceCh: make(chan float64, 128),
 		}
 		s.tracker.Set(state)
-		s.log.Info("grid: waiting for first tick", zap.String("symbol", sym))
 	}
 }
 
@@ -130,10 +129,6 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 		s.mu.Unlock()
 
 		if shouldStart {
-			s.log.Info("grid: first tick received, starting grid",
-				zap.String("symbol", t.Symbol),
-				zap.Float64("price", price),
-			)
 			go s.startGrid(s.ctx, t.Symbol, price)
 		}
 		return
@@ -163,24 +158,12 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 		return
 	}
 
-	// Показываем где цена относительно сетки
-	distToLower := (price/state.LowerBound - 1) * 100
-	distToUpper := (state.UpperBound/price - 1) * 100
-	s.log.Debug("grid: price tick",
-		zap.String("symbol", t.Symbol),
-		zap.Float64("price", price),
-		zap.Float64("lower", state.LowerBound),
-		zap.Float64("upper", state.UpperBound),
-		zap.Float64("stop_loss", state.StopLoss),
-		zap.Float64("dist_to_lower_pct", distToLower),
-		zap.Float64("dist_to_upper_pct", distToUpper),
-	)
+
 
 	// Отправляем цену в watchGrid
 	select {
 	case state.PriceCh <- price:
 	default:
-		s.log.Debug("grid: price channel full, tick dropped", zap.String("symbol", t.Symbol))
 	}
 }
 
@@ -251,20 +234,6 @@ func (s *Service) startGrid(ctx context.Context, symbol string, currentPrice flo
 		}
 	}
 
-	s.log.Info("grid: grid started",
-		zap.String("symbol", symbol),
-		zap.Float64("price", currentPrice),
-		zap.Float64("lower", lower),
-		zap.Float64("upper", upper),
-		zap.Float64("stop_loss", sl),
-		zap.Float64("ratio", ratio),
-		zap.Float64("step_pct", (ratio-1)*100),
-		zap.Float64("qty_per_level", qty),
-		zap.Float64("notional_per_order_usdt", notional),
-		zap.Int("total_levels", len(gridLevels)),
-		zap.Int("buy_orders_to_place", buyLevels),
-	)
-
 	// Размещаем buy-ордера на всех уровнях ниже текущей цены
 	PlaceAllBuyOrders(ctx, state, s.client, s.log)
 
@@ -309,12 +278,11 @@ func (s *Service) watchGrid(ctx context.Context, symbol string) {
 	syncTicker := time.NewTicker(3 * time.Second)
 	defer syncTicker.Stop()
 
-	s.log.Info("grid: watchGrid started", zap.String("symbol", symbol))
 
 	for {
 		select {
 		case <-ctx.Done():
-			s.log.Info("grid: watchGrid stopped (context cancelled)", zap.String("symbol", symbol))
+			s.log.Error("grid: watchGrid stopped (context cancelled)", zap.String("symbol", symbol))
 			return
 
 		case <-syncTicker.C:
