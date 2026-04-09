@@ -19,13 +19,13 @@ func NewRepository(pool *pgxpool.Pool, log *zap.Logger) *Repository {
 }
 
 // SaveBatch вставляет статьи, дубли молча игнорируются (ON CONFLICT DO NOTHING).
-// Возвращает количество реально сохранённых строк.
-func (r *Repository) SaveBatch(ctx context.Context, articles []Article) (int64, error) {
+// Возвращает только реально новые (вставленные) статьи.
+func (r *Repository) SaveBatch(ctx context.Context, articles []Article) ([]Article, error) {
 	if len(articles) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 
-	var saved int64
+	var saved []Article
 	for _, a := range articles {
 		tag, err := r.pool.Exec(ctx,
 			`INSERT INTO news (source, guid, title, link, description, summary, published_at)
@@ -41,7 +41,9 @@ func (r *Repository) SaveBatch(ctx context.Context, articles []Article) (int64, 
 			)
 			continue
 		}
-		saved += tag.RowsAffected()
+		if tag.RowsAffected() > 0 {
+			saved = append(saved, a)
+		}
 	}
 	return saved, nil
 }

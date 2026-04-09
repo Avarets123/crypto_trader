@@ -131,25 +131,21 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		return
 	}
 
-	saved, err := s.repo.SaveBatch(ctx, allArticles)
+	newArticles, err := s.repo.SaveBatch(ctx, allArticles)
 	if err != nil {
 		s.log.Warn("news: SaveBatch error", zap.Error(err))
 		return
 	}
 	s.log.Info("news: saved new articles",
-		zap.Int64("saved", saved),
+		zap.Int("saved", len(newArticles)),
 		zap.Int("total_fetched", len(allArticles)),
 	)
 
-	// Отправляем только новые статьи в Telegram
-	if s.notifier != nil && saved > 0 {
-		var count int64
-		for _, a := range allArticles {
-			if count >= saved {
-				break
-			}
+	// Отправляем только реально новые статьи в Telegram
+	if s.notifier != nil {
+		for _, a := range newArticles {
+			a := a
 			go s.notifier.SendToThread(ctx, formatNewsMsg(a), s.newsThreadID)
-			count++
 		}
 	}
 }
