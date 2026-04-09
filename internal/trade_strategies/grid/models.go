@@ -20,9 +20,13 @@ type GridState struct {
 	StopLoss     float64
 	Ratio        float64
 	Levels       []*GridLevel
-	QtyPerLevel  float64   // объём в Base Currency на каждый уровень
+	QtyPerLevel  float64     // объём в Base Currency на каждый уровень
 	StartedAt    time.Time
 	Active       bool
 	CurrentPrice float64
 	PriceCh      chan float64 // канал цен от OnTicker для watchGrid
+
+	// Статистика прибыли
+	TotalPnL    float64 // накопленный реализованный PnL за сессию (USDT)
+	FilledCycles int    // количество завершённых циклов buy→sell
 }

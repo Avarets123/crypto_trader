@@ -359,6 +359,8 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 		// оценочный PnL одного цикла buy→sell
 		buyPrice := level.Price / state.Ratio
 		pnl = (level.Price - buyPrice) * state.QtyPerLevel
+		state.TotalPnL += pnl
+		state.FilledCycles++
 	}
 
 	s.log.Info("grid: order filled",
@@ -367,7 +369,9 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 		zap.Int("level", level.Index),
 		zap.Float64("price", level.Price),
 		zap.Float64("qty", state.QtyPerLevel),
-		zap.Float64("est_cycle_pnl_usdt", pnl),
+		zap.Float64("cycle_pnl_usdt", pnl),
+		zap.Float64("total_pnl_usdt", state.TotalPnL),
+		zap.Int("filled_cycles", state.FilledCycles),
 	)
 
 	// Считаем активные ордера после исполнения
@@ -403,8 +407,21 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 		activeOrders,
 		nextAction,
 	)
-	if side == "sell" && pnl > 0 {
-		msg += fmt.Sprintf("\nЦикл PnL: +%.4f USDT", pnl)
+	if side == "sell" {
+		pnlSign := "+"
+		if pnl < 0 {
+			pnlSign = ""
+		}
+		msg += fmt.Sprintf("\nЦикл PnL: %s%.4f USDT", pnlSign, pnl)
+		msg += fmt.Sprintf("\nИтого за сессию: %s%.4f USDT (%d циклов)",
+			func() string {
+				if state.TotalPnL >= 0 {
+					return "+"
+				}
+				return ""
+			}(),
+			state.TotalPnL, state.FilledCycles,
+		)
 	}
 	go s.notifier.Send(ctx, msg)
 
@@ -460,19 +477,25 @@ func (s *Service) emergencyClose(ctx context.Context, symbol string, triggerPric
 		zap.Int("cooldown_sec", s.cfg.CooldownSec),
 	)
 
+	pnlSign := "+"
+	if state.TotalPnL < 0 {
+		pnlSign = ""
+	}
 	msg := fmt.Sprintf(
 		"🛑 <b>Grid СТОП-ЛОСС</b>\n"+
 			"Символ: <b>%s</b>\n"+
 			"Цена: %s | СЛ: %s\n"+
 			"Диапазон был: %s — %s\n"+
 			"Продано: %.8g (рыночный ордер)\n"+
-			"Работа: %.1f мин\n"+
+			"Работа: %.1f мин | Циклов: %d\n"+
+			"PnL сессии: %s%.4f USDT\n"+
 			"Перезапуск через %d сек",
 		symbol,
 		formatGridPrice(triggerPrice), formatGridPrice(state.StopLoss),
 		formatGridPrice(state.LowerBound), formatGridPrice(state.UpperBound),
 		totalQty,
-		holdMin,
+		holdMin, state.FilledCycles,
+		pnlSign, state.TotalPnL,
 		s.cfg.CooldownSec,
 	)
 	go s.notifier.Send(ctx, msg)
@@ -532,19 +555,25 @@ func (s *Service) shiftGridUp(ctx context.Context, symbol string, currentPrice f
 	newLower := currentPrice * (1 - s.cfg.LowerBoundPct/100)
 	newUpper := currentPrice * (1 + s.cfg.UpperBoundPct/100)
 
+	pnlSign := "+"
+	if state.TotalPnL < 0 {
+		pnlSign = ""
+	}
 	msg := fmt.Sprintf(
 		"📈 <b>Grid сдвиг вверх</b>\n"+
 			"Символ: <b>%s</b>\n"+
 			"Рост: %s → %s (+%.2f%%)\n"+
 			"Старый диапазон: %s — %s\n"+
 			"Новый диапазон: %s — %s\n"+
-			"Работа: %.1f мин",
+			"Работа: %.1f мин | Циклов: %d\n"+
+			"PnL сессии: %s%.4f USDT",
 		symbol,
 		formatGridPrice(oldLower), formatGridPrice(currentPrice),
 		(currentPrice/oldLower-1)*100,
 		formatGridPrice(oldLower), formatGridPrice(oldUpper),
 		formatGridPrice(newLower), formatGridPrice(newUpper),
-		holdMin,
+		holdMin, state.FilledCycles,
+		pnlSign, state.TotalPnL,
 	)
 	go s.notifier.Send(ctx, msg)
 
