@@ -306,7 +306,7 @@ func (s *Service) startGrid(ctx context.Context, symbol string, currentPrice flo
 
 // watchGrid периодически синхронизирует ордера и обрабатывает исполнения.
 func (s *Service) watchGrid(ctx context.Context, symbol string) {
-	syncTicker := time.NewTicker(5 * time.Second)
+	syncTicker := time.NewTicker(3 * time.Second)
 	defer syncTicker.Stop()
 
 	s.log.Info("grid: watchGrid started", zap.String("symbol", symbol))
