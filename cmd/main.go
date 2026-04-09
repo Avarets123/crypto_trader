@@ -23,6 +23,7 @@ import (
 	"github.com/osman/bot-traider/internal/ticker"
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/arbitration"
+	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/momentum"
 	"github.com/osman/bot-traider/internal/trade_strategies/scalping"
 )
@@ -152,6 +153,22 @@ func main() {
 		log.Info("scalping strategy enabled", zap.Strings("symbols", scalpCfg.Symbols))
 	} else {
 		log.Info("scalping strategy disabled (SCALPING_ENABLED=false)")
+	}
+
+	// --- Grid стратегия ---
+	gridCfg := grid.LoadConfig()
+	if gridCfg.Enabled {
+		gridClient, ok := restClients[gridCfg.Exchange]
+		if !ok {
+			log.Fatal("grid: unknown exchange in GRID_EXCHANGE",
+				zap.String("exchange", gridCfg.Exchange))
+		}
+		gridSvc := grid.NewService(gridCfg, gridClient, log.With(zap.String("component", "grid")), tgNotifier)
+		gridSvc.Start(ctx)
+		tickerService.WithOnSend(gridSvc.OnTicker)
+		log.Info("grid strategy enabled", zap.Strings("symbols", gridCfg.Symbols))
+	} else {
+		log.Info("grid strategy disabled (GRID_ENABLED=false)")
 	}
 
 	// --- Volume Spike детектор ---
