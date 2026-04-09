@@ -15,10 +15,9 @@ type Config struct {
 	LowerBoundPct    float64  // GRID_LOWER_BOUND_PCT=5.0 (% ниже текущей цены)
 	UpperBoundPct    float64  // GRID_UPPER_BOUND_PCT=5.0 (% выше текущей цены)
 	TotalUSDT        float64  // GRID_TOTAL_USDT=100.0 (общий капитал на сетку)
-	StopLossPct      float64  // GRID_STOP_LOSS_PCT=2.0 (% ниже LowerBound для аварийного закрытия)
-	TrailingUp       bool     // GRID_TRAILING_UP=false (автосдвиг сетки вверх при пробое UpperBound)
-	SlippageLimitPct float64  // GRID_SLIPPAGE_LIMIT_PCT=0.1 (макс. проскальзывание)
-	CooldownSec      int      // GRID_COOLDOWN_SEC=60 (cooldown перед перезапуском сетки)
+	StopLossPct     float64  // GRID_STOP_LOSS_PCT=2.0 (% ниже LowerBound для аварийного закрытия)
+	TrailingUp      bool     // GRID_TRAILING_UP=false (автосдвиг сетки вверх при пробое UpperBound)
+	CooldownSec     int      // GRID_COOLDOWN_SEC=60 (cooldown перед перезапуском сетки)
 	MinNotionalUSDT  float64  // GRID_MIN_NOTIONAL_USDT=6.0 (мин. объём ордера в USDT, Binance требует ≥5)
 }
 
@@ -46,10 +45,9 @@ func LoadConfig() Config {
 		LowerBoundPct:    sharedconfig.GetEnvFloat("GRID_LOWER_BOUND_PCT", 5.0),
 		UpperBoundPct:    sharedconfig.GetEnvFloat("GRID_UPPER_BOUND_PCT", 5.0),
 		TotalUSDT:        sharedconfig.GetEnvFloat("GRID_TOTAL_USDT", 100.0),
-		StopLossPct:      sharedconfig.GetEnvFloat("GRID_STOP_LOSS_PCT", 2.0),
-		TrailingUp:       sharedconfig.GetEnvBool("GRID_TRAILING_UP", false),
-		SlippageLimitPct: sharedconfig.GetEnvFloat("GRID_SLIPPAGE_LIMIT_PCT", 0.1),
-		CooldownSec:      sharedconfig.GetEnvInt("GRID_COOLDOWN_SEC", 60),
+		StopLossPct: sharedconfig.GetEnvFloat("GRID_STOP_LOSS_PCT", 2.0),
+		TrailingUp:  sharedconfig.GetEnvBool("GRID_TRAILING_UP", false),
+		CooldownSec: sharedconfig.GetEnvInt("GRID_COOLDOWN_SEC", 60),
 		MinNotionalUSDT:  sharedconfig.GetEnvFloat("GRID_MIN_NOTIONAL_USDT", 6.0),
 	}
 }

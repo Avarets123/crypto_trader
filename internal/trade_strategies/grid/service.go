@@ -112,12 +112,13 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 	if !state.Active {
 		// Запускаем сетку при первом тике (один раз)
 		s.mu.Lock()
-		if !state.Active {
+		shouldStart := !state.Active
+		if shouldStart {
 			state.Active = true // ставим флаг сразу чтобы не запустить дважды
 		}
 		s.mu.Unlock()
 
-		if !state.Active {
+		if shouldStart {
 			go s.startGrid(s.ctx, t.Symbol, price)
 		}
 		return
