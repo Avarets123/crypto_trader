@@ -237,6 +237,129 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 	return result, nil
 }
 
+// PlaceLimitOrder размещает лимитный ордер (POST /v5/order/create).
+// При postOnly=true использует timeInForce=PostOnly.
+func (c *RestClient) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, price float64, postOnly bool) (exchange.OrderResult, error) {
+	bySide := strings.Title(strings.ToLower(side)) //nolint:staticcheck
+	step := getStepSize(ctx, symbol, c.log)
+	fmtQty := formatQtyWithStep(qty, step)
+	fmtPrice := strconv.FormatFloat(price, 'f', -1, 64)
+
+	timeInForce := "GTC"
+	if postOnly {
+		timeInForce = "PostOnly"
+	}
+
+	bodyMap := map[string]string{
+		"category":    "spot",
+		"symbol":      symbol,
+		"side":        bySide,
+		"orderType":   "Limit",
+		"qty":         fmtQty,
+		"price":       fmtPrice,
+		"timeInForce": timeInForce,
+	}
+	bodyBytes, _ := json.Marshal(bodyMap)
+
+	resp, err := c.doWithRetryFn(func() (*http.Request, error) {
+		return c.newSignedRequest(ctx, http.MethodPost, "/v5/order/create", "", string(bodyBytes))
+	})
+	if err != nil {
+		return exchange.OrderResult{}, fmt.Errorf("bybit place limit order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return exchange.OrderResult{}, fmt.Errorf("bybit place limit order: status %d body: %s", resp.StatusCode, respBody)
+	}
+
+	var raw struct {
+		RetCode int    `json:"retCode"`
+		RetMsg  string `json:"retMsg"`
+		Result  struct {
+			OrderID string `json:"orderId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &raw); err != nil {
+		return exchange.OrderResult{}, fmt.Errorf("bybit place limit order unmarshal: %w", err)
+	}
+	if raw.RetCode != 0 {
+		return exchange.OrderResult{}, fmt.Errorf("bybit place limit order api error: %d %s", raw.RetCode, raw.RetMsg)
+	}
+
+	parsedQty, _ := strconv.ParseFloat(fmtQty, 64)
+
+	c.log.Info("bybit: limit order placed",
+		zap.String("order_id", raw.Result.OrderID),
+		zap.String("symbol", symbol),
+		zap.String("side", side),
+		zap.Float64("price", price),
+		zap.Float64("qty", parsedQty),
+		zap.Bool("post_only", postOnly),
+	)
+
+	return exchange.OrderResult{
+		OrderID: raw.Result.OrderID,
+		Price:   price,
+		Qty:     parsedQty,
+	}, nil
+}
+
+// GetOpenOrders возвращает активные ордера по символу (GET /v5/order/realtime).
+func (c *RestClient) GetOpenOrders(ctx context.Context, symbol string) ([]exchange.OpenOrder, error) {
+	queryStr := "category=spot&symbol=" + symbol
+
+	resp, err := c.doWithRetryFn(func() (*http.Request, error) {
+		return c.newSignedRequest(ctx, http.MethodGet, "/v5/order/realtime", queryStr, "")
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bybit get open orders: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var raw struct {
+		RetCode int    `json:"retCode"`
+		RetMsg  string `json:"retMsg"`
+		Result  struct {
+			List []struct {
+				OrderID string `json:"orderId"`
+				Symbol  string `json:"symbol"`
+				Side    string `json:"side"`
+				Price   string `json:"price"`
+				Qty     string `json:"qty"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("bybit get open orders unmarshal: %w", err)
+	}
+	if raw.RetCode != 0 {
+		return nil, fmt.Errorf("bybit get open orders api error: %d %s", raw.RetCode, raw.RetMsg)
+	}
+
+	orders := make([]exchange.OpenOrder, 0, len(raw.Result.List))
+	for _, o := range raw.Result.List {
+		p, _ := strconv.ParseFloat(o.Price, 64)
+		q, _ := strconv.ParseFloat(o.Qty, 64)
+		orders = append(orders, exchange.OpenOrder{
+			OrderID: o.OrderID,
+			Symbol:  o.Symbol,
+			Side:    strings.ToUpper(o.Side),
+			Price:   p,
+			Qty:     q,
+		})
+	}
+	return orders, nil
+}
+
+// GetFreeUSDT возвращает свободный баланс USDT.
+func (c *RestClient) GetFreeUSDT(ctx context.Context) (float64, error) {
+	return fetchCoinBalance(ctx, c.http, c.baseURL, c.apiKey, c.secret, "USDT", c.log)
+}
+
 // CancelOrder отменяет ордер (POST /v5/order/cancel).
 func (c *RestClient) CancelOrder(ctx context.Context, symbol, orderID string) error {
 	c.log.Info("bybit: cancelling order", zap.String("symbol", symbol), zap.String("order_id", orderID))

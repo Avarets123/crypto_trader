@@ -219,6 +219,138 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 	return result, nil
 }
 
+// PlaceLimitOrder размещает лимитный ордер (POST /api/v3/order).
+// При postOnly=true использует тип LIMIT_MAKER (отклоняется если было бы taker).
+func (c *RestClient) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, price float64, postOnly bool) (exchange.OrderResult, error) {
+	stepSize := getStepSize(ctx, symbol, c.log)
+	formattedQty := formatQtyWithStep(qty, stepSize)
+
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("side", strings.ToUpper(side))
+	if postOnly {
+		params.Set("type", "LIMIT_MAKER")
+	} else {
+		params.Set("type", "LIMIT")
+		params.Set("timeInForce", "GTC")
+	}
+	params.Set("quantity", formattedQty)
+	params.Set("price", strconv.FormatFloat(price, 'f', -1, 64))
+	signREST(c.secret, params)
+
+	reqFn := func() (*http.Request, error) {
+		r, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v3/order", strings.NewReader(params.Encode()))
+		if err != nil {
+			return nil, err
+		}
+		r.Header.Set("X-MBX-APIKEY", c.apiKey)
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r, nil
+	}
+
+	resp, err := c.doWithRetryFn(reqFn)
+	if err != nil {
+		return exchange.OrderResult{}, fmt.Errorf("binance place limit order: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return exchange.OrderResult{}, fmt.Errorf("binance place limit order: status %d body: %s", resp.StatusCode, respBody)
+	}
+
+	var raw struct {
+		OrderID int64  `json:"orderId"`
+		Price   string `json:"price"`
+		OrigQty string `json:"origQty"`
+	}
+	if err := json.Unmarshal(respBody, &raw); err != nil {
+		return exchange.OrderResult{}, fmt.Errorf("binance place limit order unmarshal: %w", err)
+	}
+
+	parsedPrice, _ := strconv.ParseFloat(raw.Price, 64)
+	parsedQty, _ := strconv.ParseFloat(raw.OrigQty, 64)
+
+	c.log.Info("binance: limit order placed",
+		zap.String("order_id", strconv.FormatInt(raw.OrderID, 10)),
+		zap.String("symbol", symbol),
+		zap.String("side", side),
+		zap.Float64("price", parsedPrice),
+		zap.Float64("qty", parsedQty),
+		zap.Bool("post_only", postOnly),
+	)
+
+	return exchange.OrderResult{
+		OrderID: strconv.FormatInt(raw.OrderID, 10),
+		Price:   parsedPrice,
+		Qty:     parsedQty,
+	}, nil
+}
+
+// GetOpenOrders возвращает список активных ордеров по символу (GET /api/v3/openOrders).
+func (c *RestClient) GetOpenOrders(ctx context.Context, symbol string) ([]exchange.OpenOrder, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	signREST(c.secret, params)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/api/v3/openOrders?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-MBX-APIKEY", c.apiKey)
+
+	resp, err := c.doWithRetry(req)
+	if err != nil {
+		return nil, fmt.Errorf("binance get open orders: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("binance get open orders: status %d body: %s", resp.StatusCode, body)
+	}
+
+	var raw []struct {
+		OrderID int64  `json:"orderId"`
+		Symbol  string `json:"symbol"`
+		Side    string `json:"side"`
+		Price   string `json:"price"`
+		OrigQty string `json:"origQty"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("binance get open orders unmarshal: %w", err)
+	}
+
+	orders := make([]exchange.OpenOrder, 0, len(raw))
+	for _, o := range raw {
+		price, _ := strconv.ParseFloat(o.Price, 64)
+		qty, _ := strconv.ParseFloat(o.OrigQty, 64)
+		orders = append(orders, exchange.OpenOrder{
+			OrderID: strconv.FormatInt(o.OrderID, 10),
+			Symbol:  o.Symbol,
+			Side:    o.Side,
+			Price:   price,
+			Qty:     qty,
+		})
+	}
+	return orders, nil
+}
+
+// GetFreeUSDT возвращает свободный баланс USDT.
+func (c *RestClient) GetFreeUSDT(ctx context.Context) (float64, error) {
+	info, err := c.GetAccountInfo(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, b := range info.Balances {
+		if b.Asset == "USDT" {
+			return b.Free, nil
+		}
+	}
+	return 0, nil
+}
+
 // CancelOrder отменяет ордер (DELETE /api/v3/order).
 func (c *RestClient) CancelOrder(ctx context.Context, symbol, orderID string) error {
 	c.log.Info("binance: cancelling order", zap.String("symbol", symbol), zap.String("order_id", orderID))

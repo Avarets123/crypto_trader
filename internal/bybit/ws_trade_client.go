@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -384,6 +385,126 @@ func (c *WsTradeClient) sendRequest(ctx context.Context, op string, args interfa
 		)
 		return wsTradeResponse{}, ctx.Err()
 	}
+}
+
+// PlaceLimitOrder размещает лимитный ордер через Bybit Private WS API.
+// При postOnly=true использует timeInForce=PostOnly.
+func (c *WsTradeClient) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, price float64, postOnly bool) (exchange.OrderResult, error) {
+	bySide := strings.Title(strings.ToLower(side)) //nolint:staticcheck
+	step := getStepSize(ctx, symbol, c.log)
+	fmtQty := formatQtyWithStep(qty, step)
+
+	timeInForce := "GTC"
+	if postOnly {
+		timeInForce = "PostOnly"
+	}
+
+	args := map[string]interface{}{
+		"category":    "spot",
+		"symbol":      symbol,
+		"side":        bySide,
+		"orderType":   "Limit",
+		"qty":         fmtQty,
+		"price":       strconv.FormatFloat(price, 'f', -1, 64),
+		"timeInForce": timeInForce,
+	}
+
+	resp, err := c.sendRequest(ctx, "order.create", args)
+	if err != nil {
+		return exchange.OrderResult{}, fmt.Errorf("bybit ws place limit order: %w", err)
+	}
+	if resp.RetCode != 0 {
+		return exchange.OrderResult{}, fmt.Errorf("bybit ws place limit order api error: %d %s", resp.RetCode, resp.RetMsg)
+	}
+
+	var raw struct {
+		OrderID string `json:"orderId"`
+	}
+	if err := json.Unmarshal(resp.Data, &raw); err != nil {
+		return exchange.OrderResult{}, fmt.Errorf("bybit ws place limit order unmarshal: %w", err)
+	}
+
+	parsedQty, _ := strconv.ParseFloat(fmtQty, 64)
+
+	c.log.Info("bybit ws trade: limit order placed",
+		zap.String("order_id", raw.OrderID),
+		zap.String("symbol", symbol),
+		zap.String("side", side),
+		zap.Float64("price", price),
+		zap.Bool("post_only", postOnly),
+	)
+
+	return exchange.OrderResult{
+		OrderID: raw.OrderID,
+		Price:   price,
+		Qty:     parsedQty,
+	}, nil
+}
+
+// GetOpenOrders возвращает активные ордера через REST API.
+func (c *WsTradeClient) GetOpenOrders(ctx context.Context, symbol string) ([]exchange.OpenOrder, error) {
+	queryStr := "category=spot&symbol=" + symbol
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	recvWindow := "5000"
+	signPayload := timestamp + c.apiKey + recvWindow + queryStr
+	signature := signBybit(c.secret, signPayload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.restBaseURL+"/v5/order/realtime?"+queryStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-BAPI-API-KEY", c.apiKey)
+	req.Header.Set("X-BAPI-TIMESTAMP", timestamp)
+	req.Header.Set("X-BAPI-SIGN", signature)
+	req.Header.Set("X-BAPI-RECV-WINDOW", recvWindow)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("bybit ws get open orders: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var raw struct {
+		RetCode int    `json:"retCode"`
+		RetMsg  string `json:"retMsg"`
+		Result  struct {
+			List []struct {
+				OrderID string `json:"orderId"`
+				Symbol  string `json:"symbol"`
+				Side    string `json:"side"`
+				Price   string `json:"price"`
+				Qty     string `json:"qty"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("bybit ws get open orders unmarshal: %w", err)
+	}
+	if raw.RetCode != 0 {
+		return nil, fmt.Errorf("bybit ws get open orders api error: %d %s", raw.RetCode, raw.RetMsg)
+	}
+
+	orders := make([]exchange.OpenOrder, 0, len(raw.Result.List))
+	for _, o := range raw.Result.List {
+		p, _ := strconv.ParseFloat(o.Price, 64)
+		q, _ := strconv.ParseFloat(o.Qty, 64)
+		orders = append(orders, exchange.OpenOrder{
+			OrderID: o.OrderID,
+			Symbol:  o.Symbol,
+			Side:    strings.ToUpper(o.Side),
+			Price:   p,
+			Qty:     q,
+		})
+	}
+	return orders, nil
+}
+
+// GetFreeUSDT возвращает свободный баланс USDT через REST.
+func (c *WsTradeClient) GetFreeUSDT(ctx context.Context) (float64, error) {
+	return fetchCoinBalance(ctx, c.http, c.restBaseURL, c.apiKey, c.secret, "USDT", c.log)
 }
 
 // newReqID генерирует уникальный ID для WS-запроса.

@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,10 +27,12 @@ var _ exchange.RestClient = (*WsTradeClient)(nil)
 // WsTradeClient реализует exchange.RestClient через Binance WebSocket API.
 // Ордера размещаются по одному персистентному WS-соединению без REST-вызовов.
 type WsTradeClient struct {
-	base    wsConn
-	apiKey  string
-	secret  string
-	log     *zap.Logger
+	base        wsConn
+	apiKey      string
+	secret      string
+	restBaseURL string
+	http        *http.Client
+	log         *zap.Logger
 
 	connMu  sync.RWMutex
 	conn    *websocket.Conn
@@ -58,8 +63,10 @@ type wsTradeResponse struct {
 func NewWsTradeClient(log *zap.Logger) *WsTradeClient {
 	devMode := sharedconfig.GetEnv("DEV_MODE", "false") == "true"
 	wsURL := "wss://ws-api.binance.com/ws-api/v3"
+	restBaseURL := "https://api.binance.com"
 	if devMode {
 		wsURL = "wss://ws-api.testnet.binance.vision/ws-api/v3"
+		restBaseURL = "https://testnet.binance.vision"
 	}
 	maxWait := time.Duration(sharedconfig.GetEnvInt("RECONNECT_MAX_WAIT", 60)) * time.Second
 
@@ -69,11 +76,13 @@ func NewWsTradeClient(log *zap.Logger) *WsTradeClient {
 	)
 
 	return &WsTradeClient{
-		base:    wsConn{url: wsURL, log: log, maxWait: maxWait},
-		apiKey:  sharedconfig.GetEnv("BINANCE_API_KEY", ""),
-		secret:  sharedconfig.GetEnv("BINANCE_API_SECRET", ""),
-		log:     log,
-		pending: make(map[string]chan wsTradeResponse),
+		base:        wsConn{url: wsURL, log: log, maxWait: maxWait},
+		apiKey:      sharedconfig.GetEnv("BINANCE_API_KEY", ""),
+		secret:      sharedconfig.GetEnv("BINANCE_API_SECRET", ""),
+		restBaseURL: restBaseURL,
+		http:        &http.Client{Timeout: 10 * time.Second},
+		log:         log,
+		pending:     make(map[string]chan wsTradeResponse),
 	}
 }
 
@@ -319,6 +328,157 @@ func (c *WsTradeClient) sendRequest(ctx context.Context, method string, params m
 		c.log.Warn("binance ws trade: request timed out", zap.String("id", id), zap.String("method", method))
 		return wsTradeResponse{}, ctx.Err()
 	}
+}
+
+// PlaceLimitOrder размещает лимитный ордер через Binance WS API.
+// При postOnly=true использует LIMIT_MAKER (отклоняется если было бы taker).
+func (c *WsTradeClient) PlaceLimitOrder(ctx context.Context, symbol, side string, qty, price float64, postOnly bool) (exchange.OrderResult, error) {
+	stepSize := getStepSize(ctx, symbol, c.log)
+	formattedQty := formatQtyWithStep(qty, stepSize)
+
+	params := map[string]interface{}{
+		"symbol":   symbol,
+		"side":     strings.ToUpper(side),
+		"quantity": formattedQty,
+		"price":    strconv.FormatFloat(price, 'f', -1, 64),
+	}
+	if postOnly {
+		params["type"] = "LIMIT_MAKER"
+	} else {
+		params["type"] = "LIMIT"
+		params["timeInForce"] = "GTC"
+	}
+	signWS(c.apiKey, c.secret, params)
+
+	resp, err := c.sendRequest(ctx, "order.place", params)
+	if err != nil {
+		return exchange.OrderResult{}, fmt.Errorf("binance ws place limit order: %w", err)
+	}
+	if resp.Status != 200 {
+		msg := "unknown error"
+		if resp.Error != nil {
+			msg = resp.Error.Msg
+		}
+		return exchange.OrderResult{}, fmt.Errorf("binance ws place limit order: status %d: %s", resp.Status, msg)
+	}
+
+	var raw struct {
+		OrderID int64  `json:"orderId"`
+		Price   string `json:"price"`
+		OrigQty string `json:"origQty"`
+	}
+	if err := json.Unmarshal(resp.Result, &raw); err != nil {
+		return exchange.OrderResult{}, fmt.Errorf("binance ws place limit order unmarshal: %w", err)
+	}
+
+	parsedPrice, _ := strconv.ParseFloat(raw.Price, 64)
+	parsedQty, _ := strconv.ParseFloat(raw.OrigQty, 64)
+
+	c.log.Info("binance ws trade: limit order placed",
+		zap.String("order_id", strconv.FormatInt(raw.OrderID, 10)),
+		zap.String("symbol", symbol),
+		zap.String("side", side),
+		zap.Float64("price", parsedPrice),
+		zap.Bool("post_only", postOnly),
+	)
+
+	return exchange.OrderResult{
+		OrderID: strconv.FormatInt(raw.OrderID, 10),
+		Price:   parsedPrice,
+		Qty:     parsedQty,
+	}, nil
+}
+
+// GetOpenOrders возвращает активные ордера через REST API.
+func (c *WsTradeClient) GetOpenOrders(ctx context.Context, symbol string) ([]exchange.OpenOrder, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	signREST(c.secret, params)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.restBaseURL+"/api/v3/openOrders?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-MBX-APIKEY", c.apiKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("binance ws get open orders: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("binance ws get open orders: status %d body: %s", resp.StatusCode, body)
+	}
+
+	var raw []struct {
+		OrderID int64  `json:"orderId"`
+		Symbol  string `json:"symbol"`
+		Side    string `json:"side"`
+		Price   string `json:"price"`
+		OrigQty string `json:"origQty"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("binance ws get open orders unmarshal: %w", err)
+	}
+
+	orders := make([]exchange.OpenOrder, 0, len(raw))
+	for _, o := range raw {
+		p, _ := strconv.ParseFloat(o.Price, 64)
+		q, _ := strconv.ParseFloat(o.OrigQty, 64)
+		orders = append(orders, exchange.OpenOrder{
+			OrderID: strconv.FormatInt(o.OrderID, 10),
+			Symbol:  o.Symbol,
+			Side:    o.Side,
+			Price:   p,
+			Qty:     q,
+		})
+	}
+	return orders, nil
+}
+
+// GetFreeUSDT возвращает свободный баланс USDT через REST API.
+func (c *WsTradeClient) GetFreeUSDT(ctx context.Context) (float64, error) {
+	params := url.Values{}
+	signREST(c.secret, params)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.restBaseURL+"/api/v3/account?"+params.Encode(), nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-MBX-APIKEY", c.apiKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("binance ws get free usdt: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("binance ws get free usdt: status %d", resp.StatusCode)
+	}
+
+	var raw struct {
+		Balances []struct {
+			Asset string `json:"asset"`
+			Free  string `json:"free"`
+		} `json:"balances"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, fmt.Errorf("binance ws get free usdt unmarshal: %w", err)
+	}
+
+	for _, b := range raw.Balances {
+		if b.Asset == "USDT" {
+			free, _ := strconv.ParseFloat(b.Free, 64)
+			return free, nil
+		}
+	}
+	return 0, nil
 }
 
 // newRequestID генерирует уникальный ID для WS-запроса.
