@@ -64,6 +64,8 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		{"cointelegraph", rss.FetchCoinTelegraph},
 		{"decrypt", rss.FetchDecrypt},
 		{"theblock", rss.FetchTheBlock},
+		{"binance", rss.FetchBinanceAnnouncements},
+		{"bybit", rss.FetchBybitAnnouncements},
 	}
 
 	var (
