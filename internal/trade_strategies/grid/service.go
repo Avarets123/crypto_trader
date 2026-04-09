@@ -274,13 +274,21 @@ func (s *Service) startGrid(ctx context.Context, symbol string, currentPrice flo
 	)
 
 	msg := fmt.Sprintf(
-		"🟩 <b>Grid запущена</b>\nСимвол: <b>%s</b>\nДиапазон: %s — %s\nУровней: %d | Шаг: %.3f%%\nОбъём/уровень: %.8g\nСтоп-лосс: %s",
-		symbol,
+		"🟩 <b>Grid запущена</b>\n"+
+			"Биржа: %s | Символ: <b>%s</b>\n"+
+			"Цена входа: %s\n"+
+			"Диапазон: %s — %s\n"+
+			"Стоп-лосс: %s (-%s%%)\n"+
+			"Уровней: %d | Шаг: %.3f%%\n"+
+			"Объём/уровень: %.8g (≈%s USDT)\n"+
+			"Buy-ордеров размещено: %d / %d",
+		s.cfg.Exchange, symbol,
+		formatGridPrice(currentPrice),
 		formatGridPrice(lower), formatGridPrice(upper),
-		s.cfg.Grids,
-		(ratio-1)*100,
-		qty,
-		formatGridPrice(sl),
+		formatGridPrice(sl), fmt.Sprintf("%.1f", s.cfg.StopLossPct),
+		s.cfg.Grids, (ratio-1)*100,
+		qty, formatGridPrice(notional),
+		placed, buyLevels,
 	)
 	go s.notifier.Send(ctx, msg)
 
@@ -362,13 +370,38 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 		zap.Float64("est_cycle_pnl_usdt", pnl),
 	)
 
+	// Считаем активные ордера после исполнения
+	activeOrders := 0
+	for _, l := range state.Levels {
+		if l.OrderID != "" {
+			activeOrders++
+		}
+	}
+
+	nextAction := ""
+	switch side {
+	case "buy":
+		if level.Index+1 < len(state.Levels) {
+			nextAction = fmt.Sprintf("→ sell на %s", formatGridPrice(state.Levels[level.Index+1].Price))
+		}
+	case "sell":
+		if level.Index-1 >= 0 {
+			nextAction = fmt.Sprintf("→ buy на %s", formatGridPrice(state.Levels[level.Index-1].Price))
+		}
+	}
+
 	msg := fmt.Sprintf(
-		"✅ <b>Grid ордер исполнен</b>\nСимвол: <b>%s</b>\nСторона: %s\nУровень: %d / %d\nЦена: %s\nОбъём: %.8g",
+		"✅ <b>Grid ордер исполнен</b>\n"+
+			"Символ: <b>%s</b>\n"+
+			"Сторона: %s | Уровень: %d / %d\n"+
+			"Цена: %s | Объём: %.8g\n"+
+			"Активных ордеров: %d\n"+
+			"%s",
 		state.Symbol,
-		strings.ToUpper(side),
-		level.Index+1, len(state.Levels),
-		formatGridPrice(level.Price),
-		state.QtyPerLevel,
+		strings.ToUpper(side), level.Index+1, len(state.Levels),
+		formatGridPrice(level.Price), state.QtyPerLevel,
+		activeOrders,
+		nextAction,
 	)
 	if side == "sell" && pnl > 0 {
 		msg += fmt.Sprintf("\nЦикл PnL: +%.4f USDT", pnl)
@@ -428,11 +461,19 @@ func (s *Service) emergencyClose(ctx context.Context, symbol string, triggerPric
 	)
 
 	msg := fmt.Sprintf(
-		"🛑 <b>Grid СТОП-ЛОСС</b>\nСимвол: <b>%s</b>\nЦена: %s\nСтоп-лосс: %s\nРабота: %.1f мин",
+		"🛑 <b>Grid СТОП-ЛОСС</b>\n"+
+			"Символ: <b>%s</b>\n"+
+			"Цена: %s | СЛ: %s\n"+
+			"Диапазон был: %s — %s\n"+
+			"Продано: %.8g (рыночный ордер)\n"+
+			"Работа: %.1f мин\n"+
+			"Перезапуск через %d сек",
 		symbol,
-		formatGridPrice(triggerPrice),
-		formatGridPrice(state.StopLoss),
+		formatGridPrice(triggerPrice), formatGridPrice(state.StopLoss),
+		formatGridPrice(state.LowerBound), formatGridPrice(state.UpperBound),
+		totalQty,
 		holdMin,
+		s.cfg.CooldownSec,
 	)
 	go s.notifier.Send(ctx, msg)
 
@@ -488,12 +529,21 @@ func (s *Service) shiftGridUp(ctx context.Context, symbol string, currentPrice f
 		zap.Float64("hold_minutes", holdMin),
 	)
 
+	newLower := currentPrice * (1 - s.cfg.LowerBoundPct/100)
+	newUpper := currentPrice * (1 + s.cfg.UpperBoundPct/100)
+
 	msg := fmt.Sprintf(
-		"📈 <b>Grid сдвиг вверх</b>\nСимвол: <b>%s</b>\nСтарый диапазон: %s — %s\nНовая цена: %s (+%.2f%%)\nРабота: %.1f мин",
+		"📈 <b>Grid сдвиг вверх</b>\n"+
+			"Символ: <b>%s</b>\n"+
+			"Рост: %s → %s (+%.2f%%)\n"+
+			"Старый диапазон: %s — %s\n"+
+			"Новый диапазон: %s — %s\n"+
+			"Работа: %.1f мин",
 		symbol,
-		formatGridPrice(oldLower), formatGridPrice(oldUpper),
-		formatGridPrice(currentPrice),
+		formatGridPrice(oldLower), formatGridPrice(currentPrice),
 		(currentPrice/oldLower-1)*100,
+		formatGridPrice(oldLower), formatGridPrice(oldUpper),
+		formatGridPrice(newLower), formatGridPrice(newUpper),
 		holdMin,
 	)
 	go s.notifier.Send(ctx, msg)
