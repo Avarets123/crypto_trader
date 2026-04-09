@@ -153,7 +153,25 @@ func (s *Service) onCandle(symbol string, c Candle) {
 
 	// 1. ATR-фильтр волатильности
 	if !s.checkATRFilter(symbol, snapshot) {
-		s.log.Debug("scalping: ATR filter failed", zap.String("symbol", symbol))
+		highs := extractHighs(snapshot)
+		lows := extractLows(snapshot)
+		closes := extractCloses(snapshot)
+		currentATR := ATR(highs, lows, closes, s.cfg.ATRPeriod)
+		s.mu.Lock()
+		history := s.atrHistory[symbol]
+		s.mu.Unlock()
+		var avgATR float64
+		for _, v := range history {
+			avgATR += v
+		}
+		if len(history) > 0 {
+			avgATR /= float64(len(history))
+		}
+		s.log.Debug("scalping: ATR filter failed",
+			zap.String("symbol", symbol),
+			zap.Float64("atr", currentATR),
+			zap.Float64("avg_atr", avgATR),
+		)
 		return
 	}
 
@@ -172,6 +190,7 @@ func (s *Service) onCandle(symbol string, c Candle) {
 
 	// 3. Уже есть открытая сделка по символу
 	if s.tracker.Has(symbol) {
+		s.log.Debug("scalping: open position exists, skipping", zap.String("symbol", symbol))
 		return
 	}
 
@@ -245,6 +264,12 @@ func (s *Service) onCandle(symbol string, c Candle) {
 	}
 	tradeUSDT := balance * s.cfg.TradeAmountPct / 100
 	qty := tradeUSDT / price
+	s.log.Debug("scalping: calculated trade size",
+		zap.String("symbol", symbol),
+		zap.Float64("balance_usdt", balance),
+		zap.Float64("trade_usdt", tradeUSDT),
+		zap.Float64("qty", qty),
+	)
 	if qty <= 0 {
 		s.log.Warn("scalping: calculated qty is zero", zap.String("symbol", symbol))
 		return
@@ -322,6 +347,11 @@ func (s *Service) waitForFill(symbol, orderID string, signalPrice, qty float64) 
 			}
 
 			// Ордер исполнен
+			s.log.Info("scalping: limit order filled",
+				zap.String("symbol", symbol),
+				zap.String("order_id", orderID),
+				zap.Float64("price", signalPrice),
+			)
 			fillPrice := signalPrice // для limit-order fillPrice = signalPrice
 
 			// Проверяем проскальзывание
@@ -566,6 +596,7 @@ func (s *Service) checkDailyLoss() bool {
 
 	// Сброс в новый день
 	if s.dailyDate != today {
+		s.log.Info("scalping: daily loss counter reset", zap.String("date", today))
 		s.dailyDate = today
 		s.dailyLossUSDT = 0
 	}
@@ -595,6 +626,7 @@ func (s *Service) getFreeUSDT() (float64, error) {
 	}
 	s.cachedBalance = balance
 	s.balanceFetchedAt = time.Now()
+	s.log.Debug("scalping: balance fetched", zap.Float64("usdt", balance))
 	return balance, nil
 }
 
