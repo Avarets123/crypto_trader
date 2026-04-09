@@ -13,34 +13,35 @@ import (
 
 // tradeNotifier отправляет Telegram-уведомления при открытии и закрытии сделок.
 type tradeNotifier struct {
-	ctx      context.Context
-	notifier *telegram.Notifier
-	log      *zap.Logger
+	ctx            context.Context
+	notifier       *telegram.Notifier
+	log            *zap.Logger
+	tradesThreadID int
 }
 
-func newTradeNotifier(ctx context.Context, notifier *telegram.Notifier, log *zap.Logger) *tradeNotifier {
-	return &tradeNotifier{ctx: ctx, notifier: notifier, log: log}
+func newTradeNotifier(ctx context.Context, notifier *telegram.Notifier, log *zap.Logger, tradesThreadID int) *tradeNotifier {
+	return &tradeNotifier{ctx: ctx, notifier: notifier, log: log, tradesThreadID: tradesThreadID}
 }
 
 // OnTradeOpen — хук для trade.Service.WithOnTradeOpen.
 func (n *tradeNotifier) OnTradeOpen(t *trade.Trade) {
 	msg := formatTradeOpenMsg(t)
 	n.log.Debug("trade notifier: sending open notification", zap.String("symbol", t.Symbol))
-	n.notifier.Send(n.ctx, msg)
+	n.notifier.SendToThread(n.ctx, msg, n.tradesThreadID)
 }
 
 // OnTradeClose — хук для trade.Service.WithOnTradeClose.
 func (n *tradeNotifier) OnTradeClose(t *trade.Trade) {
 	msg := formatTradeCloseMsg(t)
 	n.log.Debug("trade notifier: sending close notification", zap.String("symbol", t.Symbol))
-	n.notifier.Send(n.ctx, msg)
+	n.notifier.SendToThread(n.ctx, msg, n.tradesThreadID)
 }
 
 // OnTradeCloseError — хук для trade.Service.WithOnTradeCloseError.
 func (n *tradeNotifier) OnTradeCloseError(t *trade.Trade, err error) {
 	msg := formatTradeCloseErrorMsg(t, err)
 	n.log.Debug("trade notifier: sending close error notification", zap.String("symbol", t.Symbol), zap.Error(err))
-	n.notifier.Send(n.ctx, msg)
+	n.notifier.SendToThread(n.ctx, msg, n.tradesThreadID)
 }
 
 func formatTradeOpenMsg(t *trade.Trade) string {

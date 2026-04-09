@@ -14,6 +14,13 @@ import (
 
 const apiURL = "https://api.telegram.org/bot%s/sendMessage"
 
+// tgErrorResponse — тело ответа Telegram при ошибке.
+type tgErrorResponse struct {
+	Parameters struct {
+		RetryAfter int `json:"retry_after"`
+	} `json:"parameters"`
+}
+
 // Notifier отправляет сообщения в Telegram-чат.
 type Notifier struct {
 	token  string
@@ -34,7 +41,7 @@ func New(token, chatID string, log *zap.Logger) *Notifier {
 		token:  token,
 		chatID: chatID,
 		log:    log,
-		client: &http.Client{Timeout: 5 * time.Second},
+		client: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -45,45 +52,90 @@ func (n *Notifier) enabled() bool {
 
 // Send отправляет текстовое сообщение. Неблокирующий — вызывать в горутине при необходимости.
 func (n *Notifier) Send(ctx context.Context, text string) {
+	n.SendToThread(ctx, text, 0)
+}
+
+// SendToThread отправляет сообщение в конкретный топик (thread) группы.
+// Если threadID <= 0 — поведение идентично Send (без message_thread_id).
+// При 429 Too Many Requests автоматически ждёт retry_after секунд и повторяет (до 3 попыток).
+func (n *Notifier) SendToThread(ctx context.Context, text string, threadID int) {
 	if !n.enabled() {
 		return
 	}
 
-	body, err := json.Marshal(map[string]string{
+	payload := map[string]any{
 		"chat_id":    n.chatID,
 		"text":       text,
 		"parse_mode": "HTML",
-	})
+	}
+	if threadID > 0 {
+		payload["message_thread_id"] = threadID
+	}
+
+	body, err := json.Marshal(payload)
 	if err != nil {
 		n.log.Error("telegram: failed to marshal message", zap.Error(err))
 		return
 	}
 
+	n.log.Debug("telegram: sending message",
+		zap.String("text", text),
+		zap.Int("thread_id", threadID),
+	)
+
 	url := fmt.Sprintf(apiURL, n.token)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		n.log.Error("telegram: failed to create request", zap.Error(err))
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
+	const maxAttempts = 3
 
-	n.log.Debug("telegram: sending message", zap.String("text", text))
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			n.log.Error("telegram: failed to create request", zap.Error(err))
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	resp, err := n.client.Do(req)
-	if err != nil {
-		n.log.Error("telegram: request failed", zap.Error(err))
-		return
-	}
-	defer resp.Body.Close()
+		resp, err := n.client.Do(req)
+		if err != nil {
+			n.log.Error("telegram: request failed", zap.Error(err))
+			return
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			n.log.Debug("telegram: message sent successfully", zap.Int("thread_id", threadID))
+			return
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := 1
+			var errResp tgErrorResponse
+			if json.Unmarshal(respBody, &errResp) == nil && errResp.Parameters.RetryAfter > 0 {
+				retryAfter = errResp.Parameters.RetryAfter
+			}
+			n.log.Warn("telegram: rate limited, retrying",
+				zap.Int("retry_after_sec", retryAfter),
+				zap.Int("attempt", attempt),
+				zap.Int("max_attempts", maxAttempts),
+			)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(retryAfter) * time.Second):
+			}
+			continue
+		}
+
 		n.log.Error("telegram: unexpected status",
 			zap.Int("status", resp.StatusCode),
-			zap.String("response", string(body)),
+			zap.String("response", string(respBody)),
 		)
 		return
 	}
 
-	n.log.Debug("telegram: message sent successfully")
+	n.log.Error("telegram: gave up after retries",
+		zap.Int("attempts", maxAttempts),
+		zap.Int("thread_id", threadID),
+	)
 }

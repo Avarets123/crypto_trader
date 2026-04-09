@@ -97,7 +97,8 @@ func main() {
 		log.With(zap.String("component", "order-manager")),
 	)
 
-	tradeNotif := newTradeNotifier(ctx, tgNotifier, log.With(zap.String("component", "trade-notifier")))
+	tradesThreadID := sharedconfig.GetEnvInt("TELEGRAM_TRADES_THREAD_ID", 0)
+	tradeNotif := newTradeNotifier(ctx, tgNotifier, log.With(zap.String("component", "trade-notifier")), tradesThreadID)
 	tradeSvc.WithOnTradeOpen(tradeNotif.OnTradeOpen)
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
 	tradeSvc.WithOnTradeCloseError(tradeNotif.OnTradeCloseError)
@@ -178,8 +179,10 @@ func main() {
 	if newsEnabled {
 		newsRepo := news.NewRepository(pool, log.With(zap.String("component", "news")))
 		newsSvc := news.NewService(newsRepo, log.With(zap.String("component", "news")), sharedconfig.GetEnvInt("NEWS_FETCH_INTERVAL_MIN", 30))
+		newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
+		newsSvc.WithTelegramNotifier(tgNotifier, newsThreadID)
 		go newsSvc.Start(ctx)
-		log.Info("news: RSS parser enabled")
+		log.Info("news: RSS parser enabled", zap.Int("news_thread_id", newsThreadID))
 	} else {
 		log.Info("news: RSS parser disabled (NEWS_ENABLED=false)")
 	}
