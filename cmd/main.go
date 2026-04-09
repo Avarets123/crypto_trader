@@ -24,6 +24,7 @@ import (
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/arbitration"
 	"github.com/osman/bot-traider/internal/news"
+	"github.com/osman/bot-traider/internal/ollama"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/momentum"
 	"github.com/osman/bot-traider/internal/trade_strategies/scalping"
@@ -181,6 +182,12 @@ func main() {
 		newsSvc := news.NewService(newsRepo, log.With(zap.String("component", "news")), sharedconfig.GetEnvInt("NEWS_FETCH_INTERVAL_MIN", 30))
 		newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
 		newsSvc.WithTelegramNotifier(tgNotifier, newsThreadID)
+		ollamaClient := ollama.NewClient(ollama.LoadConfig())
+		newsSvc.WithSummarizer(ollamaClient)
+		log.Info("news: Ollama summarizer enabled",
+			zap.String("url", ollama.LoadConfig().URL),
+			zap.String("model", ollama.LoadConfig().Model),
+		)
 		go newsSvc.Start(ctx)
 		log.Info("news: RSS parser enabled", zap.Int("news_thread_id", newsThreadID))
 	} else {
