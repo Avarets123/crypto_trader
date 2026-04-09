@@ -64,9 +64,10 @@ func (n *Notifier) SendToThread(ctx context.Context, text string, threadID int) 
 	}
 
 	payload := map[string]any{
-		"chat_id":    n.chatID,
-		"text":       text,
-		"parse_mode": "HTML",
+		"chat_id":                  n.chatID,
+		"text":                     text,
+		"parse_mode":               "HTML",
+		"disable_web_page_preview": true,
 	}
 	if threadID > 0 {
 		payload["message_thread_id"] = threadID
