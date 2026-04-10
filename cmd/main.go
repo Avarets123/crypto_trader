@@ -14,6 +14,7 @@ import (
 
 	"github.com/osman/bot-traider/internal/binance"
 	"github.com/osman/bot-traider/internal/bybit"
+	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/orderbook"
 	"github.com/osman/bot-traider/internal/shared/comparator"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
@@ -85,6 +86,34 @@ func main() {
 
 	go sendTopVolatile(ctx, log, binanceRest, tgNotifier, obSvc, obRepo)
 
+	st := stats.New(ctx, log)
+
+	// --- Exchange Orders ---
+	if sharedconfig.GetEnvBool("EXCHANGE_ORDERS_ENABLED", false) {
+		eoRepo := exchange_orders.NewRepository(pool, log.With(zap.String("component", "exchange-orders")))
+		eoRepo.WithOnSaved(st.RecordExchangeOrders)
+		eoFetcher := exchange_orders.NewFetcher(
+			"binance",
+			sharedconfig.GetEnv("BINANCE_WS_URL", "wss://stream.binance.com:9443"),
+			eoRepo,
+			log.With(zap.String("component", "exchange-orders")),
+		)
+		eoSvc := exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
+		tickers, err := binanceRest.GetTopVolatile(ctx, 10)
+		if err != nil {
+			log.Error("exchange_orders: failed to get top volatile", zap.Error(err))
+		} else {
+			symbols := make([]string, len(tickers))
+			for i, t := range tickers {
+				symbols[i] = t.Symbol
+			}
+			eoSvc.Start(ctx, symbols)
+		}
+		log.Info("exchange_orders: enabled")
+	} else {
+		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
+	}
+
 	// Пересылаем ошибки в отдельный Telegram-топик
 	errorsThreadID := sharedconfig.GetEnvInt("TELEGRAM_ERRORS_THREAD_ID", 0)
 	if errorsThreadID > 0 {
@@ -94,8 +123,6 @@ func main() {
 		}))
 		log.Info("telegram error notifications enabled", zap.Int("thread_id", errorsThreadID))
 	}
-
-	st := stats.New(ctx, log)
 
 	// --- Ticker сервис ---
 	repo := ticker.NewRepository(pool, log)

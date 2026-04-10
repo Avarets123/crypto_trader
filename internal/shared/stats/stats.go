@@ -17,12 +17,13 @@ type ExchangeStats struct {
 
 // Stats агрегирует статистику по всем биржам.
 type Stats struct {
-	exchanges        map[string]*ExchangeStats
-	startedAt        time.Time
-	spreadsDetected  uint64
-	pumpsDetected    uint64
-	crashesDetected  uint64
-	volumeSpikes     uint64
+	exchanges           map[string]*ExchangeStats
+	startedAt           time.Time
+	spreadsDetected     uint64
+	pumpsDetected       uint64
+	crashesDetected     uint64
+	volumeSpikes        uint64
+	exchangeOrdersSaved uint64
 }
 
 // New создаёт Stats с прединициализированными записями для каждой биржи.
@@ -60,6 +61,11 @@ func (s *Stats) RecordVolumeSpike() {
 	atomic.AddUint64(&s.volumeSpikes, 1)
 }
 
+// RecordExchangeOrders атомарно увеличивает счётчик сохранённых ордеров.
+func (s *Stats) RecordExchangeOrders(n int) {
+	atomic.AddUint64(&s.exchangeOrdersSaved, uint64(n))
+}
+
 
 // Record атомарно увеличивает счётчики для указанной биржи.
 func (s *Stats) Record(exchange string, dataSize int) {
@@ -88,6 +94,7 @@ func (s *Stats) LogPeriodically(ctx context.Context, interval time.Duration, log
 					zap.Uint64("pumps_detected", atomic.LoadUint64(&s.pumpsDetected)),
 					zap.Uint64("crashes_detected", atomic.LoadUint64(&s.crashesDetected)),
 					zap.Uint64("volume_spikes", atomic.LoadUint64(&s.volumeSpikes)),
+					zap.Uint64("exchange_orders_saved", atomic.LoadUint64(&s.exchangeOrdersSaved)),
 				)
 				for name, e := range s.exchanges {
 					log.Info("stats",
