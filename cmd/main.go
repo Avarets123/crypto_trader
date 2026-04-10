@@ -9,6 +9,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/osman/bot-traider/internal/binance"
 	"github.com/osman/bot-traider/internal/bybit"
@@ -62,6 +63,17 @@ func main() {
 
 
 	tgNotifier, tgAgg := initTg(ctx, log)
+
+	// Пересылаем ошибки в отдельный Telegram-топик
+	errorsThreadID := sharedconfig.GetEnvInt("TELEGRAM_ERRORS_THREAD_ID", 0)
+	if errorsThreadID > 0 {
+		errCore := telegram.NewErrorCore(ctx, tgNotifier, errorsThreadID)
+		log = log.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+			return zapcore.NewTee(core, errCore)
+		}))
+		log.Info("telegram error notifications enabled", zap.Int("thread_id", errorsThreadID))
+	}
+
 	st := stats.New(ctx, log)
 
 	// --- Ticker сервис ---
