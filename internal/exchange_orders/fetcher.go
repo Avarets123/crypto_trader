@@ -165,6 +165,7 @@ func (f *Fetcher) parseMessage(msg []byte, symbol string) (*ExchangeOrder, error
 		Quantity  string `json:"q"`
 		TradeTime int64  `json:"T"`
 		IsMaker   bool   `json:"m"`
+		Ignore    bool   `json:"M"` // всегда true, нужен чтобы не перезаписывал IsMaker через case-insensitive matching
 	}
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
