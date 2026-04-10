@@ -47,3 +47,12 @@ func (r *Repository) SaveBatch(ctx context.Context, articles []Article) ([]Artic
 	}
 	return saved, nil
 }
+
+// UpdateSummary обновляет поле summary у статьи по guid.
+func (r *Repository) UpdateSummary(ctx context.Context, guid, summary string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE news SET summary = $1 WHERE guid = $2`,
+		summary, guid,
+	)
+	return err
+}

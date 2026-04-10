@@ -93,32 +93,14 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 			)
 			articles := make([]Article, 0, len(items))
 			for _, it := range items {
-				a := Article{
+				articles = append(articles, Article{
 					Source:      it.Source,
 					GUID:        it.GUID,
 					Title:       it.Title,
 					Link:        it.Link,
 					Description: it.Summary,
-					Summary:     "",
 					PublishedAt: it.PublishedAt,
-				}
-				if s.summarizer != nil {
-					summary, err := s.summarizer.Summarize(ctx, it.Title, it.Summary)
-					if err != nil {
-						s.log.Warn("news: ollama summarize failed",
-							zap.String("title", it.Title),
-							zap.Error(err),
-						)
-					} else {
-						a.Summary = summary
-						s.log.Info("news: summarized article",
-							zap.String("title", it.Title),
-							zap.Int("original_len", len(it.Summary)),
-							zap.Int("summary_len", len(summary)),
-						)
-					}
-				}
-				articles = append(articles, a)
+				})
 			}
 			mu.Lock()
 			allArticles = append(allArticles, articles...)
@@ -141,11 +123,28 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		zap.Int("total_fetched", len(allArticles)),
 	)
 
-	// Отправляем только реально новые статьи в Telegram
-	if s.notifier != nil {
-		for _, a := range newArticles {
-			a := a
-			go s.notifier.SendToThread(ctx, formatNewsMsg(a), s.newsThreadID)
+	// Суммаризируем только новые статьи, затем отправляем в Telegram
+	for i := range newArticles {
+		a := &newArticles[i]
+		if s.summarizer != nil {
+			summary, err := s.summarizer.Summarize(ctx, a.Title, a.Description)
+			if err != nil {
+				s.log.Warn("news: ollama summarize failed",
+					zap.String("title", a.Title),
+					zap.Error(err),
+				)
+			} else {
+				a.Summary = summary
+				if err := s.repo.UpdateSummary(ctx, a.GUID, summary); err != nil {
+					s.log.Warn("news: failed to update summary",
+						zap.String("guid", a.GUID),
+						zap.Error(err),
+					)
+				}
+			}
+		}
+		if s.notifier != nil {
+			go s.notifier.SendToThread(ctx, formatNewsMsg(*a), s.newsThreadID)
 		}
 	}
 }
