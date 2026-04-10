@@ -14,12 +14,14 @@ import (
 
 	"github.com/osman/bot-traider/internal/binance"
 	"github.com/osman/bot-traider/internal/bybit"
+	"github.com/osman/bot-traider/internal/orderbook"
 	"github.com/osman/bot-traider/internal/shared/comparator"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
 	"github.com/osman/bot-traider/internal/shared/detector"
 	"github.com/osman/bot-traider/internal/shared/exchange"
 	"github.com/osman/bot-traider/internal/shared/logger"
+	"github.com/osman/bot-traider/internal/shared/redis"
 	"github.com/osman/bot-traider/internal/shared/stats"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
@@ -65,7 +67,23 @@ func main() {
 
 	tgNotifier, tgAgg := initTg(ctx, log)
 
-	go sendTopVolatile(ctx, log, binanceRest, tgNotifier)
+	// --- Redis ---
+	rdb, err := redisclient.New(ctx, redisclient.LoadConfig(), log.With(zap.String("component", "redis")))
+	if err != nil {
+		log.Fatal("redis connect failed", zap.Error(err))
+	}
+
+	// --- Order Book ---
+	obRepo := orderbook.NewRepository(rdb)
+	obFetcher := orderbook.NewFetcher(
+		binanceRest,
+		sharedconfig.GetEnv("BINANCE_WS_URL", "wss://stream.binance.com:9443"),
+		obRepo,
+		log.With(zap.String("component", "orderbook")),
+	)
+	obSvc := orderbook.NewService(obFetcher, obRepo, log.With(zap.String("component", "orderbook")))
+
+	go sendTopVolatile(ctx, log, binanceRest, tgNotifier, obSvc, obRepo)
 
 	// Пересылаем ошибки в отдельный Telegram-топик
 	errorsThreadID := sharedconfig.GetEnvInt("TELEGRAM_ERRORS_THREAD_ID", 0)
@@ -258,12 +276,22 @@ func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, ticke
 }
 
 
-func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestClient, tg *telegram.Notifier) {
+func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestClient, tg *telegram.Notifier, obSvc *orderbook.Service, obRepo *orderbook.Repository) {
 	tickers, err := rest.GetTopVolatile(ctx, 10)
 	if err != nil {
 		log.Error("failed to get top volatile", zap.Error(err))
 		return
 	}
+
+	symbols := make([]string, len(tickers))
+	for i, t := range tickers {
+		symbols[i] = t.Symbol
+	}
+
+	// Загружаем стаканы (REST-снимок → Redis, затем WS в фоне)
+	obSvc.Init(ctx, symbols, 20)
+
+	newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
 
 	msg := "🔥 <b>Топ-10 самых волатильных криптовалют (Binance, 24ч)</b>\n\n"
 	for i, t := range tickers {
@@ -273,10 +301,46 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestCli
 		}
 		msg += fmt.Sprintf("%d. <b>%s</b> — %s%.2f%%  ($%.4f)\n",
 			i+1, t.Symbol, sign, t.PriceChangePercent, t.LastPrice)
+
+		ob, err := obRepo.Get(ctx, t.Symbol)
+		if err != nil {
+			log.Warn("orderbook unavailable", zap.String("symbol", t.Symbol), zap.Error(err))
+			msg += "   <i>(стакан недоступен)</i>\n"
+		} else {
+			msg += formatOrderBook(ob)
+		}
+		msg += "\n"
 	}
 
-	tg.Send(ctx, msg)
+	tg.SendToThread(ctx, msg, newsThreadID)
 	log.Info("top volatile sent to telegram")
+}
+
+func formatOrderBook(ob *orderbook.OrderBook) string {
+	const top = 3
+	format := func(entries []orderbook.Entry) string {
+		out := ""
+		for i, e := range entries {
+			if i >= top {
+				break
+			}
+			if i > 0 {
+				out += " | "
+			}
+			out += fmt.Sprintf("%xx%s", e.Price, e.Qty)
+		}
+		return out
+	}
+
+	bids := format(ob.Bids)
+	asks := format(ob.Asks)
+	if bids == "" {
+		bids = "—"
+	}
+	if asks == "" {
+		asks = "—"
+	}
+	return fmt.Sprintf("   Bids: %s\n   Asks: %s\n", bids, asks)
 }
 
 func initTg(ctx context.Context, log *zap.Logger) (*telegram.Notifier, *telegram.Aggregator) {

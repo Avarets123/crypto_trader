@@ -386,6 +386,63 @@ func (c *RestClient) CancelOrder(ctx context.Context, symbol, orderID string) er
 	return nil
 }
 
+// DepthSnapshot — снимок стакана (bids/asks как пары [price, qty]).
+type DepthSnapshot struct {
+	Bids [][2]string
+	Asks [][2]string
+}
+
+// GetDepth возвращает снимок стакана через GET /api/v3/depth (публичный эндпоинт).
+func (c *RestClient) GetDepth(ctx context.Context, symbol string, limit int) (*DepthSnapshot, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("limit", strconv.Itoa(limit))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/api/v3/depth?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.doWithRetry(req)
+	if err != nil {
+		return nil, fmt.Errorf("binance get depth: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("binance get depth: status %d body: %s", resp.StatusCode, body)
+	}
+
+	var raw struct {
+		Bids [][]json.RawMessage `json:"bids"`
+		Asks [][]json.RawMessage `json:"asks"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("binance get depth unmarshal: %w", err)
+	}
+
+	parsePairs := func(rows [][]json.RawMessage) [][2]string {
+		pairs := make([][2]string, 0, len(rows))
+		for _, row := range rows {
+			if len(row) < 2 {
+				continue
+			}
+			var price, qty string
+			json.Unmarshal(row[0], &price) //nolint:errcheck
+			json.Unmarshal(row[1], &qty)   //nolint:errcheck
+			pairs = append(pairs, [2]string{price, qty})
+		}
+		return pairs
+	}
+
+	return &DepthSnapshot{
+		Bids: parsePairs(raw.Bids),
+		Asks: parsePairs(raw.Asks),
+	}, nil
+}
+
 // VolatileTicker — тикер с изменением цены за 24ч.
 type VolatileTicker struct {
 	Symbol            string
