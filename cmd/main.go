@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"os/signal"
 	"syscall"
 
@@ -320,23 +321,29 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestCli
 
 	newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
 
-	msg := "🔥 <b>Топ-10 самых волатильных криптовалют (Binance, 24ч)</b>\n\n"
+	msg := "🔥 <b>Топ-10 волатильных криптовалют (Binance, 24ч)</b>\n\n"
 	for i, t := range tickers {
+		arrow := "📈"
+		if t.PriceChangePercent < 0 {
+			arrow = "📉"
+		}
 		sign := "+"
 		if t.PriceChangePercent < 0 {
 			sign = ""
 		}
-		msg += fmt.Sprintf("%d. <b>%s</b> — %s%.2f%%  ($%.4f)\n",
-			i+1, t.Symbol, sign, t.PriceChangePercent, t.LastPrice)
+		msg += fmt.Sprintf("%s <b>%s</b>  %s%.2f%%  <code>$%s</code>\n",
+			arrow, t.Symbol, sign, t.PriceChangePercent, formatPrice(t.LastPrice))
 
-		ob, err := obRepo.Get(ctx, t.Symbol)
-		if err != nil {
-			log.Warn("orderbook unavailable", zap.String("symbol", t.Symbol), zap.Error(err))
-			msg += "   <i>(стакан недоступен)</i>\n"
+		ob, obErr := obRepo.Get(ctx, t.Symbol)
+		if obErr != nil {
+			log.Warn("orderbook unavailable", zap.String("symbol", t.Symbol), zap.Error(obErr))
 		} else {
 			msg += formatOrderBook(ob)
 		}
-		msg += "\n"
+
+		if i < len(tickers)-1 {
+			msg += "\n"
+		}
 	}
 
 	tg.SendToThread(ctx, msg, newsThreadID)
@@ -346,29 +353,22 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestCli
 func formatOrderBook(ob *orderbook.OrderBook) string {
 	const top = 3
 	format := func(entries []orderbook.Entry) string {
-		out := ""
+		parts := make([]string, 0, top)
 		for i, e := range entries {
 			if i >= top {
 				break
 			}
-			if i > 0 {
-				out += " | "
-			}
-			out += fmt.Sprintf("%xx%s", e.Price, e.Qty)
+			parts = append(parts, fmt.Sprintf("%s × %s", e.Price, e.Qty))
 		}
-		return out
+		if len(parts) == 0 {
+			return "—"
+		}
+		return strings.Join(parts, "  |  ")
 	}
 
-	bids := format(ob.Bids)
-	asks := format(ob.Asks)
-	if bids == "" {
-		bids = "—"
-	}
-	if asks == "" {
-		asks = "—"
-	}
-	return fmt.Sprintf("   Bids: %s\n   Asks: %s\n", bids, asks)
+	return fmt.Sprintf("  🟢 Покупка: <i>%s</i>\n  🔴 Продажа: <i>%s</i>\n", format(ob.Bids), format(ob.Asks))
 }
+
 
 func initTg(ctx context.Context, log *zap.Logger) (*telegram.Notifier, *telegram.Aggregator) {
 	tg := telegram.New(
