@@ -58,7 +58,7 @@ func (f *Fetcher) FetchSnapshot(ctx context.Context, symbol string, depth int) (
 // Subscribe открывает WS-стрим <symbol>@depth20 и при каждом сообщении обновляет Redis.
 // Reconnect с exponential backoff. Блокирует до ctx.Done().
 func (f *Fetcher) Subscribe(ctx context.Context, symbol string) {
-	wsURL := fmt.Sprintf("%s/ws/%s@depth20@100ms", f.wsBase, strings.ToLower(symbol))
+	wsURL := fmt.Sprintf("%s/ws/%s@depth20@300ms", f.wsBase, strings.ToLower(symbol))
 	wait := time.Second
 
 	for {
@@ -144,11 +144,6 @@ func (f *Fetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbol str
 			continue
 		}
 
-		f.log.Debug("orderbook ws: updated",
-			zap.String("symbol", symbol),
-			zap.Int("bids", len(ob.Bids)),
-			zap.Int("asks", len(ob.Asks)),
-		)
 	}
 }
 
