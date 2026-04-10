@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -383,6 +384,66 @@ func (c *RestClient) CancelOrder(ctx context.Context, symbol, orderID string) er
 
 	c.log.Info("binance: order cancelled", zap.String("order_id", orderID))
 	return nil
+}
+
+// VolatileTicker — тикер с изменением цены за 24ч.
+type VolatileTicker struct {
+	Symbol            string
+	PriceChangePercent float64
+	LastPrice          float64
+}
+
+// GetTopVolatile возвращает топ-N самых волатильных USDT-пар по абсолютному изменению цены за 24ч.
+// Использует публичный эндпоинт GET /api/v3/ticker/24hr — авторизация не требуется.
+func (c *RestClient) GetTopVolatile(ctx context.Context, limit int) ([]VolatileTicker, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v3/ticker/24hr", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.doWithRetry(req)
+	if err != nil {
+		return nil, fmt.Errorf("binance get top volatile: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("binance get top volatile: status %d body: %s", resp.StatusCode, body)
+	}
+
+	var raw []struct {
+		Symbol             string `json:"symbol"`
+		PriceChangePercent string `json:"priceChangePercent"`
+		LastPrice          string `json:"lastPrice"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("binance get top volatile unmarshal: %w", err)
+	}
+
+	tickers := make([]VolatileTicker, 0, len(raw))
+	for _, r := range raw {
+		if !strings.HasSuffix(r.Symbol, "USDT") {
+			continue
+		}
+		pct, _ := strconv.ParseFloat(r.PriceChangePercent, 64)
+		price, _ := strconv.ParseFloat(r.LastPrice, 64)
+		tickers = append(tickers, VolatileTicker{
+			Symbol:             r.Symbol,
+			PriceChangePercent: pct,
+			LastPrice:          price,
+		})
+	}
+
+	// Сортировка по убыванию абсолютного изменения цены
+	sort.Slice(tickers, func(i, j int) bool {
+		return tickers[i].PriceChangePercent > tickers[j].PriceChangePercent
+	})
+
+	if limit > len(tickers) {
+		limit = len(tickers)
+	}
+	return tickers[:limit], nil
 }
 
 // doWithRetry выполняет запрос с повтором при 429 (rate-limit).

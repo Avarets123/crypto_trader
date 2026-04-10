@@ -14,12 +14,14 @@ const binanceArticleBaseURL = "https://www.binance.com/en/support/announcement/"
 type binanceAnnouncementsResponse struct {
 	Code string `json:"code"`
 	Data struct {
-		Articles []struct {
-			ID          int64  `json:"id"`
-			Code        string `json:"code"`
-			Title       string `json:"title"`
-			ReleaseDate int64  `json:"releaseDate"` // unix ms
-		} `json:"articles"`
+		Catalogs []struct {
+			Articles []struct {
+				ID          int64  `json:"id"`
+				Code        string `json:"code"`
+				Title       string `json:"title"`
+				ReleaseDate int64  `json:"releaseDate"` // unix ms
+			} `json:"articles"`
+		} `json:"catalogs"`
 	} `json:"data"`
 }
 
@@ -52,19 +54,21 @@ func FetchBinanceAnnouncements(ctx context.Context) ([]Item, error) {
 		return nil, fmt.Errorf("binance announcements: api error code %s", result.Code)
 	}
 
-	items := make([]Item, 0, len(result.Data.Articles))
-	for _, a := range result.Data.Articles {
-		link := binanceArticleBaseURL + a.Code
-		guid := fmt.Sprintf("binance-announce-%d", a.ID)
-		publishedAt := time.UnixMilli(a.ReleaseDate).UTC()
-		items = append(items, Item{
-			Source:      "binance",
-			GUID:        guid,
-			Title:       a.Title,
-			Link:        link,
-			Summary:     a.Title,
-			PublishedAt: &publishedAt,
-		})
+	var items []Item
+	for _, cat := range result.Data.Catalogs {
+		for _, a := range cat.Articles {
+			link := binanceArticleBaseURL + a.Code
+			guid := fmt.Sprintf("binance-announce-%d", a.ID)
+			publishedAt := time.UnixMilli(a.ReleaseDate).UTC()
+			items = append(items, Item{
+				Source:      "binance",
+				GUID:        guid,
+				Title:       a.Title,
+				Link:        link,
+				Summary:     a.Title,
+				PublishedAt: &publishedAt,
+			})
+		}
 	}
 	return items, nil
 }

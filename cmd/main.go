@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -63,6 +64,8 @@ func main() {
 
 
 	tgNotifier, tgAgg := initTg(ctx, log)
+
+	go sendTopVolatile(ctx, log, binanceRest, tgNotifier)
 
 	// Пересылаем ошибки в отдельный Telegram-топик
 	errorsThreadID := sharedconfig.GetEnvInt("TELEGRAM_ERRORS_THREAD_ID", 0)
@@ -254,6 +257,27 @@ func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, ticke
 	}
 }
 
+
+func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestClient, tg *telegram.Notifier) {
+	tickers, err := rest.GetTopVolatile(ctx, 10)
+	if err != nil {
+		log.Error("failed to get top volatile", zap.Error(err))
+		return
+	}
+
+	msg := "🔥 <b>Топ-10 самых волатильных криптовалют (Binance, 24ч)</b>\n\n"
+	for i, t := range tickers {
+		sign := "+"
+		if t.PriceChangePercent < 0 {
+			sign = ""
+		}
+		msg += fmt.Sprintf("%d. <b>%s</b> — %s%.2f%%  ($%.4f)\n",
+			i+1, t.Symbol, sign, t.PriceChangePercent, t.LastPrice)
+	}
+
+	tg.Send(ctx, msg)
+	log.Info("top volatile sent to telegram")
+}
 
 func initTg(ctx context.Context, log *zap.Logger) (*telegram.Notifier, *telegram.Aggregator) {
 	tg := telegram.New(

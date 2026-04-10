@@ -41,7 +41,7 @@ func New(token, chatID string, log *zap.Logger) *Notifier {
 		token:  token,
 		chatID: chatID,
 		log:    log,
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -97,8 +97,16 @@ func (n *Notifier) SendToThread(ctx context.Context, text string, threadID int) 
 
 		resp, err := n.client.Do(req)
 		if err != nil {
-			n.log.Error("telegram: request failed", zap.Error(err))
-			return
+			n.log.Warn("telegram: request failed, retrying",
+				zap.Error(err),
+				zap.Int("attempt", attempt),
+			)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(attempt) * 2 * time.Second):
+			}
+			continue
 		}
 
 		respBody, _ := io.ReadAll(resp.Body)
