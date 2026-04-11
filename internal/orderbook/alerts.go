@@ -278,13 +278,13 @@ func formatVolumeAlertBatch(entries []volumeAlertEntry) string {
 			obiSign = "+"
 		}
 		sb.WriteString(fmt.Sprintf(
-			"\n<b>%s</b>\nЦена:    $%.2f → $%.2f  (%s%.2f%%)\nПокупка: %s → %s\nПродажа: %s → %s\nИтого:   %s → %s  (%s%.1f%%)\nOBI:     %s%.2f → %s%s%.2f",
+			"\n<b>%s</b>\nЦена:    $%.2f → $%.2f  (%s%.2f%%)\nПокупка: %s → %s\nПродажа: %s → %s\nИтого:   %s → %s  (%s%.1f%%)\nOBI:     %s→ %s%s%.2f",
 			e.symbol,
 			e.prevPrice, e.currPrice, priceSign, priceChangePct,
 			formatAlertVol(e.prevBidVol), formatAlertVol(e.currBidVol),
 			formatAlertVol(e.prevAskVol), formatAlertVol(e.currAskVol),
 			formatAlertVol(e.prevBidVol+e.prevAskVol), formatAlertVol(e.currBidVol+e.currAskVol), totalSign, e.changePct,
-			formatOBI(e.prevOBI), e.prevOBI, OBISignal(e.currOBI), obiSign, e.currOBI,
+			formatOBI(e.prevOBI), OBISignal(e.currOBI), obiSign, e.currOBI,
 		))
 		if e.trades.BuyCount > 0 || e.trades.SellCount > 0 {
 			sb.WriteString(fmt.Sprintf(
