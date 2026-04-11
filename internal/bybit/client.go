@@ -13,10 +13,11 @@ import (
 
 // Client управляет соединениями к Bybit WebSocket.
 type Client struct {
-	config *Config
-	logger *zap.Logger
-	stats  *stats.Stats
-	svc *ticker.TickerService
+	config       *Config
+	logger       *zap.Logger
+	stats        *stats.Stats
+	svc          *ticker.TickerService
+	fetchSymbols func(ctx context.Context) ([]string, error)
 
 	mu          sync.Mutex
 	cancelConns context.CancelFunc
@@ -35,10 +36,15 @@ func NewClient(cfg *Config, log *zap.Logger, st *stats.Stats, w *ticker.TickerSe
 	}
 }
 
+// WithSymbolFetcher задаёт функцию получения списка символов для подписки.
+func (c *Client) WithSymbolFetcher(fn func(ctx context.Context) ([]string, error)) {
+	c.fetchSymbols = fn
+}
+
 // Run запускает SymbolWatcher и управляет соединениями до ctx.Done().
 func (c *Client) Run(ctx context.Context) error {
 	interval := time.Duration(c.config.SymbolRefreshMin) * time.Minute
-	watcher := NewSymbolWatcher(interval, c.config.RestURL, c.config.WatchSymbols, c.logger, c.onSymbolsChanged)
+	watcher := NewSymbolWatcher(interval, c.fetchSymbols, c.logger, c.onSymbolsChanged)
 	return watcher.Run(ctx)
 }
 

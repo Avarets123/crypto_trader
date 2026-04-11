@@ -145,30 +145,15 @@ draining:
 				continue // устаревшее событие
 			}
 			// Обнаружен gap: WS опередил снимок.
-			// Пробуем получить свежий снимок один раз.
+			// Принимаем gap без REST-запроса — стакан восстановится из дельт за несколько секунд.
 			if d.FirstUpdateID > snap.LastUpdateID+1 {
-				f.log.Warn("orderbook diff: sync gap, re-fetching snapshot",
+				f.log.Warn("orderbook diff: sync gap, accepting and continuing",
 					zap.String("symbol", symbol),
 					zap.Int64("U", d.FirstUpdateID),
 					zap.Int64("lastUpdateID", snap.LastUpdateID),
 				)
-				newSnap, err := f.rest.GetDepth(ctx, symbol, snapshotDepth)
-				if err == nil {
-					snap = newSnap
-					book.Init(snap.Bids, snap.Asks, snap.LastUpdateID)
-					f.log.Info("orderbook diff: re-synced from fresh snapshot",
-						zap.String("symbol", symbol),
-						zap.Int64("lastUpdateID", snap.LastUpdateID),
-					)
-				} else {
-					f.log.Warn("orderbook diff: re-fetch failed, accepting gap",
-						zap.String("symbol", symbol),
-						zap.Error(err),
-					)
-					// Принимаем текущее событие как точку отсчёта
-					snap.LastUpdateID = d.FirstUpdateID - 1
-					book.Init(nil, nil, snap.LastUpdateID)
-				}
+				snap.LastUpdateID = d.FirstUpdateID - 1
+				book.Init(nil, nil, snap.LastUpdateID)
 			}
 			book.Apply(d.FinalUpdateID, d.Bids, d.Asks)
 		default:

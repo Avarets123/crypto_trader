@@ -17,6 +17,8 @@ import (
 	"github.com/osman/bot-traider/internal/binance"
 	"github.com/osman/bot-traider/internal/bybit"
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
+	"github.com/osman/bot-traider/internal/news"
+	"github.com/osman/bot-traider/internal/ollama"
 	"github.com/osman/bot-traider/internal/orderbook"
 	"github.com/osman/bot-traider/internal/shared/comparator"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
@@ -29,8 +31,6 @@ import (
 	"github.com/osman/bot-traider/internal/ticker"
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/arbitration"
-	"github.com/osman/bot-traider/internal/news"
-	"github.com/osman/bot-traider/internal/ollama"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/momentum"
 	"github.com/osman/bot-traider/internal/trade_strategies/scalping"
@@ -77,8 +77,10 @@ func main() {
 		log.With(zap.String("component", "orderbook")),
 	)
 	obSvc := orderbook.NewService(obFetcher, obStore, log.With(zap.String("component", "orderbook")))
+	tickers, err := binanceRest.GetTopVolatile(ctx, 10)
 
-	go sendTopVolatile(ctx, log, binanceRest, tgNotifier, obSvc)
+
+	go sendTopVolatile(ctx, log, tickers, tgNotifier, obSvc)
 
 	// --- Orderbook Alerts ---
 	var alertSvc *orderbook.AlertService
@@ -113,7 +115,6 @@ func main() {
 			alertSvc.WithTradeAggregator(tradeAgg)
 		}
 		eoSvc := exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
-		tickers, err := binanceRest.GetTopVolatile(ctx, 10)
 		if err != nil {
 			log.Error("exchange_orders: failed to get top volatile", zap.Error(err))
 		} else {
@@ -292,15 +293,28 @@ func main() {
 	})
 	tickerService.WithOnSend(volDetector.OnTicker)
 
-	watchExchanges(ctx, log, st, tickerService)
+
+	watchSymbols := make([]string, 10)
+
+	for _, s := range tickers {
+		watchSymbols = append(watchSymbols, s.Symbol)
+	}
+
+	watchExchanges(ctx, log, st, tickerService, watchSymbols)
 }
 
-func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, tickerService *ticker.TickerService) {
+func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, tickerService *ticker.TickerService, symbols []string) {
+	// Оба клиента подписываются только на топ-10 волатильных монет (по данным Binance).
+	topVolatileFetcher := func(ctx context.Context) ([]string, error) {
+		return symbols, nil
+	}
+
 	bybitCfg := bybit.LoadConfig()
 	log.Info("bybit config loaded", zap.Bool("enabled", bybitCfg.Enabled))
 	if bybitCfg.Enabled {
 		log.Info("starting bybit")
 		bybitClient := bybit.NewClient(bybitCfg, log.With(zap.String("market", "bybit")), st, tickerService)
+		bybitClient.WithSymbolFetcher(topVolatileFetcher)
 		go func() {
 			log.Info("bybit goroutine started")
 			if err := bybitClient.Run(ctx); err != nil {
@@ -323,18 +337,14 @@ func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, ticke
 	}
 	log.Info("starting binance")
 	binanceClient := binance.NewClient(binanceCfg, log.With(zap.String("market", "binance")), st, tickerService)
+	binanceClient.WithSymbolFetcher(topVolatileFetcher)
 	if err := binanceClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("binance client stopped", zap.Error(err))
 	}
 }
 
 
-func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestClient, tg *telegram.Notifier, obSvc *orderbook.Service) {
-	tickers, err := rest.GetTopVolatile(ctx, 10)
-	if err != nil {
-		log.Error("failed to get top volatile", zap.Error(err))
-		return
-	}
+func sendTopVolatile(ctx context.Context, log *zap.Logger, tickers []binance.VolatileTicker, tg *telegram.Notifier, obSvc *orderbook.Service) {
 
 	symbols := make([]string, len(tickers))
 	for i, t := range tickers {

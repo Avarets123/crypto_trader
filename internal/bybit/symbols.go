@@ -46,41 +46,32 @@ func fetchSymbolsByQuote(ctx context.Context, restURL, quote string) ([]string, 
 type SymbolWatcher struct {
 	logger   *zap.Logger
 	interval time.Duration
-	restURL  string
-	pinned   []string // если непустой — используются вместо REST-запроса
+	fetchFn  func(ctx context.Context) ([]string, error)
 	current  []string
 	mu       sync.RWMutex
 	onChange func(added, removed, all []string)
 }
 
 // NewSymbolWatcher создаёт новый SymbolWatcher.
-// pinned — фиксированный список символов; если nil/пустой — символы берутся с биржи.
+// fetchFn — функция получения актуального списка символов.
 func NewSymbolWatcher(
 	interval time.Duration,
-	restURL string,
-	pinned []string,
+	fetchFn func(ctx context.Context) ([]string, error),
 	log *zap.Logger,
 	onChange func(added, removed, all []string),
 ) *SymbolWatcher {
 	return &SymbolWatcher{
 		logger:   log,
 		interval: interval,
-		restURL:  restURL,
-		pinned:   pinned,
+		fetchFn:  fetchFn,
 		onChange: onChange,
 	}
 }
 
-// Run запускает watcher: первый fetch сразу, затем по тикеру (только при динамическом режиме).
+// Run запускает watcher: первый fetch сразу, затем по тикеру.
 func (w *SymbolWatcher) Run(ctx context.Context) error {
 	if err := w.refresh(ctx); err != nil {
 		w.logger.Error("initial symbol fetch failed", zap.Error(err))
-	}
-
-	if len(w.pinned) > 0 {
-		// Список зафиксирован — периодическое обновление не нужно.
-		<-ctx.Done()
-		return ctx.Err()
 	}
 
 	ticker := time.NewTicker(w.interval)
@@ -100,18 +91,11 @@ func (w *SymbolWatcher) Run(ctx context.Context) error {
 
 // refresh получает символы и сравнивает с текущим списком.
 func (w *SymbolWatcher) refresh(ctx context.Context) error {
-	var symbols []string
-	if len(w.pinned) > 0 {
-		symbols = blacklist.FilterSymbols(w.pinned)
-		w.logger.Info("using pinned symbols", zap.Int("count", len(symbols)))
-	} else {
-		var err error
-		symbols, err = fetchSymbolsByQuote(ctx, w.restURL, "USDT")
-		if err != nil {
-			return err
-		}
-		symbols = blacklist.FilterSymbols(symbols)
+	symbols, err := w.fetchFn(ctx)
+	if err != nil {
+		return err
 	}
+	symbols = blacklist.FilterSymbols(symbols)
 
 	w.mu.Lock()
 	old := w.current

@@ -16,9 +16,6 @@ type Base struct {
 	DevMode            bool
 	PostgresDSN        string
 	SpreadThresholdPct float64
-	// WatchSymbols — зафиксированный список символов (Binance/Bybit формат, напр. BTCUSDT).
-	// Если пустой — символы берутся с биржи.
-	WatchSymbols []string
 }
 
 // LoadBase читает общий конфиг из переменных окружения.
@@ -35,7 +32,6 @@ func LoadBase() Base {
 		DevMode:            GetEnv("DEV_MODE", "false") == "true",
 		PostgresDSN:        postgresDSN,
 		SpreadThresholdPct: GetEnvFloat("SPREAD_THRESHOLD_PCT", 1.0),
-		WatchSymbols:       GetEnvStringSlice("WATCH_SYMBOLS"),
 	}
 }
 
