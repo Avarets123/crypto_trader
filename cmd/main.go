@@ -80,6 +80,28 @@ func main() {
 
 	go sendTopVolatile(ctx, log, binanceRest, tgNotifier, obSvc)
 
+	// --- Orderbook Alerts ---
+	if orderbook.LoadAlertsConfig().Enabled {
+		alertCfg := orderbook.LoadAlertsConfig()
+		alertSvc := orderbook.NewAlertService(
+			obSvc,
+			binanceRest,
+			tgNotifier,
+			sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0),
+			alertCfg,
+			log.With(zap.String("component", "orderbook-alerts")),
+		)
+		go func() {
+			// Ждём инициализации стаканов перед стартом мониторинга
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			alertSvc.Start(ctx)
+		}()
+	}
+
 	st := stats.New(ctx, log)
 
 	// --- Exchange Orders ---

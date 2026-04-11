@@ -115,8 +115,8 @@ func (f *Fetcher) runDiffStream(ctx context.Context, symbol string, store *Store
 		}
 	}()
 
-	// Загружаем полный REST-снимок (5000 уровней)
-	snap, err := f.rest.GetDepth(ctx, symbol, 5000)
+	// Загружаем REST-снимок (500 уровней, вес=25 у Binance)
+	snap, err := f.rest.GetDepth(ctx, symbol, snapshotDepth)
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
@@ -133,7 +133,6 @@ func (f *Fetcher) runDiffStream(ctx context.Context, symbol string, store *Store
 	)
 
 	// Применяем буферизованные события (синхронизация)
-	synced := false
 draining:
 	for {
 		select {
@@ -145,13 +144,31 @@ draining:
 			if d.FinalUpdateID <= snap.LastUpdateID {
 				continue // устаревшее событие
 			}
-			if !synced {
-				// Первое валидное событие должно перекрывать lastUpdateID+1
-				if d.FirstUpdateID > snap.LastUpdateID+1 {
-					return fmt.Errorf("sync gap: U=%d > lastUpdateId+1=%d, restarting",
-						d.FirstUpdateID, snap.LastUpdateID+1)
+			// Обнаружен gap: WS опередил снимок.
+			// Пробуем получить свежий снимок один раз.
+			if d.FirstUpdateID > snap.LastUpdateID+1 {
+				f.log.Warn("orderbook diff: sync gap, re-fetching snapshot",
+					zap.String("symbol", symbol),
+					zap.Int64("U", d.FirstUpdateID),
+					zap.Int64("lastUpdateID", snap.LastUpdateID),
+				)
+				newSnap, err := f.rest.GetDepth(ctx, symbol, snapshotDepth)
+				if err == nil {
+					snap = newSnap
+					book.Init(snap.Bids, snap.Asks, snap.LastUpdateID)
+					f.log.Info("orderbook diff: re-synced from fresh snapshot",
+						zap.String("symbol", symbol),
+						zap.Int64("lastUpdateID", snap.LastUpdateID),
+					)
+				} else {
+					f.log.Warn("orderbook diff: re-fetch failed, accepting gap",
+						zap.String("symbol", symbol),
+						zap.Error(err),
+					)
+					// Принимаем текущее событие как точку отсчёта
+					snap.LastUpdateID = d.FirstUpdateID - 1
+					book.Init(nil, nil, snap.LastUpdateID)
 				}
-				synced = true
 			}
 			book.Apply(d.FinalUpdateID, d.Bids, d.Asks)
 		default:
