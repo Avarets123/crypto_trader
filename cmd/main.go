@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/joho/godotenv"
@@ -351,13 +352,48 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestCli
 
 func formatOrderBook(ob *orderbook.OrderBook) string {
 	bid, ask := "—", "—"
+	var bidPrice, askPrice float64
+
 	if len(ob.Bids) > 0 {
 		bid = ob.Bids[0].Price
+		bidPrice, _ = strconv.ParseFloat(bid, 64)
 	}
 	if len(ob.Asks) > 0 {
 		ask = ob.Asks[0].Price
+		askPrice, _ = strconv.ParseFloat(ask, 64)
 	}
-	return fmt.Sprintf("  <i>Bid %s / Ask %s</i>\n", bid, ask)
+
+	spreadStr := "—"
+	if bidPrice > 0 && askPrice > 0 {
+		spreadPct := (askPrice - bidPrice) / bidPrice * 100
+		spreadStr = fmt.Sprintf("%.3f%%", spreadPct)
+	}
+
+	var buyVol, sellVol float64
+	for _, e := range ob.Bids {
+		p, _ := strconv.ParseFloat(e.Price, 64)
+		q, _ := strconv.ParseFloat(e.Qty, 64)
+		buyVol += p * q
+	}
+	for _, e := range ob.Asks {
+		p, _ := strconv.ParseFloat(e.Price, 64)
+		q, _ := strconv.ParseFloat(e.Qty, 64)
+		sellVol += p * q
+	}
+
+	return fmt.Sprintf("  Покупка %s / Продажа %s | Спред %s\n  Покупают: $%s / Продают: $%s\n",
+		bid, ask, spreadStr, formatVolume(buyVol), formatVolume(sellVol))
+}
+
+func formatVolume(v float64) string {
+	switch {
+	case v >= 1_000_000:
+		return fmt.Sprintf("%.2fM", v/1_000_000)
+	case v >= 1_000:
+		return fmt.Sprintf("%.1fK", v/1_000)
+	default:
+		return fmt.Sprintf("%.0f", v)
+	}
 }
 
 
