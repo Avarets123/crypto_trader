@@ -176,14 +176,23 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			continue
 		}
 
-		// Объём покупок (bids) и продаж (asks) в USDT
+		// Объём покупок (bids) и продаж (asks) в USDT.
+		// Используем только топ-50 уровней: они несут реальное торговое давление,
+		// дальние ордера только размывают OBI-сигнал.
+		const obiDepth = 50
 		var bidVol, askVol float64
-		for _, e := range ob.Bids {
+		for i, e := range ob.Bids {
+			if i >= obiDepth {
+				break
+			}
 			p, _ := strconv.ParseFloat(e.Price, 64)
 			q, _ := strconv.ParseFloat(e.Qty, 64)
 			bidVol += p * q
 		}
-		for _, e := range ob.Asks {
+		for i, e := range ob.Asks {
+			if i >= obiDepth {
+				break
+			}
 			p, _ := strconv.ParseFloat(e.Price, 64)
 			q, _ := strconv.ParseFloat(e.Qty, 64)
 			askVol += p * q
