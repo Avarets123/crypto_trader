@@ -22,8 +22,9 @@ type symbolProvider interface {
 
 // bookSnapshot — снимок объёма и цены стакана в момент времени.
 type bookSnapshot struct {
-	VolumeUSDT float64
-	MidPrice   float64
+	BidVol   float64
+	AskVol   float64
+	MidPrice float64
 }
 
 // AlertService мониторит изменения объёма стакана и список топ-10 монет.
@@ -104,13 +105,15 @@ func (s *AlertService) loadInitialSymbols() {
 
 // volumeAlertEntry — данные одного символа для сводного алерта.
 type volumeAlertEntry struct {
-	symbol     string
-	prevPrice  float64
-	currPrice  float64
-	prevVol    float64
-	currVol    float64
-	changePct  float64
-	trades     exchange_orders.TradeStats
+	symbol      string
+	prevPrice   float64
+	currPrice   float64
+	prevBidVol  float64
+	currBidVol  float64
+	prevAskVol  float64
+	currAskVol  float64
+	changePct   float64
+	trades      exchange_orders.TradeStats
 }
 
 // checkVolumes проверяет изменение объёма стакана для каждого символа
@@ -130,18 +133,19 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			continue
 		}
 
-		// Суммарный объём в USDT = сумма по всем уровням bids + asks
-		var vol float64
+		// Объём покупок (bids) и продаж (asks) в USDT
+		var bidVol, askVol float64
 		for _, e := range ob.Bids {
 			p, _ := strconv.ParseFloat(e.Price, 64)
 			q, _ := strconv.ParseFloat(e.Qty, 64)
-			vol += p * q
+			bidVol += p * q
 		}
 		for _, e := range ob.Asks {
 			p, _ := strconv.ParseFloat(e.Price, 64)
 			q, _ := strconv.ParseFloat(e.Qty, 64)
-			vol += p * q
+			askVol += p * q
 		}
+		vol := bidVol + askVol
 
 		// Mid-price = среднее лучшего бида и лучшего аска
 		mid := 0.0
@@ -153,7 +157,7 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 
 		s.mu.Lock()
 		prev, hasPrev := s.snapshots[sym]
-		s.snapshots[sym] = bookSnapshot{VolumeUSDT: vol, MidPrice: mid}
+		s.snapshots[sym] = bookSnapshot{BidVol: bidVol, AskVol: askVol, MidPrice: mid}
 		s.mu.Unlock()
 
 		// Первый тик — сохраняем без уведомления
@@ -162,11 +166,12 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			continue
 		}
 
-		if prev.VolumeUSDT == 0 {
+		prevVol := prev.BidVol + prev.AskVol
+		if prevVol == 0 {
 			continue
 		}
 
-		changePct := (vol - prev.VolumeUSDT) / prev.VolumeUSDT * 100
+		changePct := (vol - prevVol) / prevVol * 100
 		if math.Abs(changePct) < s.cfg.VolumeChangePct {
 			s.log.Debug("orderbook alerts: no significant change",
 				zap.String("symbol", sym),
@@ -177,7 +182,7 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 
 		s.log.Info("orderbook alerts: volume spike detected",
 			zap.String("symbol", sym),
-			zap.Float64("prev_vol", prev.VolumeUSDT),
+			zap.Float64("prev_vol", prevVol),
 			zap.Float64("curr_vol", vol),
 			zap.Float64("change_pct", changePct),
 		)
@@ -188,13 +193,15 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 		}
 
 		entries = append(entries, volumeAlertEntry{
-			symbol:    sym,
-			prevPrice: prev.MidPrice,
-			currPrice: mid,
-			prevVol:   prev.VolumeUSDT,
-			currVol:   vol,
-			changePct: changePct,
-			trades:    trades,
+			symbol:     sym,
+			prevPrice:  prev.MidPrice,
+			currPrice:  mid,
+			prevBidVol: prev.BidVol,
+			currBidVol: bidVol,
+			prevAskVol: prev.AskVol,
+			currAskVol: askVol,
+			changePct:  changePct,
+			trades:     trades,
 		})
 	}
 
@@ -265,16 +272,18 @@ func formatVolumeAlertBatch(entries []volumeAlertEntry) string {
 		if priceChangePct < 0 {
 			priceSign = ""
 		}
-		volSign := "+"
+		totalSign := "+"
 		if e.changePct < 0 {
-			volSign = ""
+			totalSign = ""
 		}
 
 		sb.WriteString(fmt.Sprintf(
-			"\n<b>%s</b>\nЦена:   $%.2f → $%.2f  (%s%.2f%%)\nОбъём:  %s → %s  (%s%.1f%%)",
+			"\n<b>%s</b>\nЦена:    $%.2f → $%.2f  (%s%.2f%%)\nПокупка: %s → %s\nПродажа: %s → %s\nИтого:   %s → %s  (%s%.1f%%)",
 			e.symbol,
 			e.prevPrice, e.currPrice, priceSign, priceChangePct,
-			formatAlertVol(e.prevVol), formatAlertVol(e.currVol), volSign, e.changePct,
+			formatAlertVol(e.prevBidVol), formatAlertVol(e.currBidVol),
+			formatAlertVol(e.prevAskVol), formatAlertVol(e.currAskVol),
+			formatAlertVol(e.prevBidVol+e.prevAskVol), formatAlertVol(e.currBidVol+e.currAskVol), totalSign, e.changePct,
 		))
 		if e.trades.BuyCount > 0 || e.trades.SellCount > 0 {
 			sb.WriteString(fmt.Sprintf(
