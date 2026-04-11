@@ -78,33 +78,33 @@ func main() {
 	)
 	obSvc := orderbook.NewService(obFetcher, obStore, log.With(zap.String("component", "orderbook")))
 
-	// --- Top Volatile Provider — единственный источник топ-10 монет ---
-	symbolRefresh := time.Duration(sharedconfig.GetEnvInt("SYMBOL_REFRESH_MIN", 30)) * time.Minute
-	topProvider := binance.NewTopVolatileProvider(binanceRest, 10, log.With(zap.String("component", "top-volatile")))
+	// --- Top Volatile Provider — единственный источник топ-15 монет ---
+	// Интервал обновления берётся из ORDERBOOK_REFRESH_INTERVAL_MIN (общий с orderbook-alerts).
+	alertCfg := orderbook.LoadAlertsConfig()
+	topProvider := binance.NewTopVolatileProvider(binanceRest, 15, log.With(zap.String("component", "top-volatile")))
 	if err := topProvider.Fetch(ctx); err != nil {
 		log.Fatal("top volatile: initial fetch failed", zap.Error(err))
 	}
-	go topProvider.Run(ctx, symbolRefresh)
 
 	go sendTopVolatile(ctx, log, topProvider.Tickers(), tgNotifier, obSvc)
 
 	// --- Orderbook Alerts ---
 	var alertSvc *orderbook.AlertService
-	alertCfg := orderbook.LoadAlertsConfig()
 	if alertCfg.Enabled {
 		alertSvc = orderbook.NewAlertService(
 			obSvc,
-			topProvider,
 			tgNotifier,
 			sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0),
 			alertCfg,
 			log.With(zap.String("component", "orderbook-alerts")),
 		)
+		alertSvc.SetSymbols(topProvider.Symbols())
 	}
 
 	st := stats.New(ctx, log)
 
 	// --- Exchange Orders ---
+	var eoSvc *exchange_orders.Service
 	if sharedconfig.GetEnvBool("EXCHANGE_ORDERS_ENABLED", false) {
 		eoRepo := exchange_orders.NewRepository(pool, log.With(zap.String("component", "exchange-orders")))
 		eoRepo.WithOnSaved(st.RecordExchangeOrders)
@@ -120,12 +120,26 @@ func main() {
 			eoFetcher.WithOnTrade(tradeAgg.OnTrade)
 			alertSvc.WithTradeAggregator(tradeAgg)
 		}
-		eoSvc := exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
+		eoSvc = exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
 		eoSvc.Start(ctx, topProvider.Symbols())
 		log.Info("exchange_orders: enabled")
 	} else {
 		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
 	}
+
+	// Подписываемся на изменения топ-листа: обновляем стаканы и подписки exchange_orders.
+	// Хук регистрируется после создания всех зависимых сервисов.
+	topProvider.WithOnSymbolsChanged(func(added, removed []string) {
+		obSvc.OnSymbolsChanged(added, removed)
+		if eoSvc != nil {
+			eoSvc.OnSymbolsChanged(added, removed)
+		}
+		if alertSvc != nil {
+			alertSvc.OnSymbolsChanged(ctx, added, removed)
+		}
+	})
+	// Запускаем фоновое обновление топ-листа с интервалом ORDERBOOK_REFRESH_INTERVAL_MIN.
+	go topProvider.Run(ctx, time.Duration(alertCfg.RefreshIntervalMin)*time.Minute)
 
 	// Запускаем алерт-сервис после инициализации exchange_orders
 	if alertSvc != nil {
@@ -355,7 +369,7 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, tickers []binance.Vol
 
 	newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
 
-	msg := "🔥 <b>Топ-10 волатильных криптовалют (Binance, 24ч)</b>\n\n"
+	msg := "🔥 <b>Топ-15 волатильных криптовалют (Binance, 24ч)</b>\n\n"
 	for i, t := range tickers {
 		arrow := "📈"
 		if t.PriceChangePercent < 0 {

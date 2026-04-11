@@ -151,3 +151,10 @@ func (s *Store) Snapshot(symbol string) (*OrderBook, bool) {
 	ob := lb.Snapshot(symbol)
 	return &ob, true
 }
+
+// Remove удаляет LocalBook символа из Store.
+func (s *Store) Remove(symbol string) {
+	s.mu.Lock()
+	delete(s.books, symbol)
+	s.mu.Unlock()
+}

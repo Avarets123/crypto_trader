@@ -15,11 +15,6 @@ import (
 	"github.com/osman/bot-traider/internal/shared/telegram"
 )
 
-// symbolProvider — интерфейс для получения текущего списка символов из кэша.
-type symbolProvider interface {
-	Symbols() []string
-}
-
 // bookSnapshot — снимок объёма и цены стакана в момент времени.
 type bookSnapshot struct {
 	BidVol   float64
@@ -27,13 +22,12 @@ type bookSnapshot struct {
 	MidPrice float64
 }
 
-// AlertService мониторит изменения объёма стакана и список топ-10 монет.
+// AlertService мониторит изменения объёма стакана и список топ-15 монет.
 type AlertService struct {
-	mu       sync.Mutex
-	symbols  []string
+	mu        sync.Mutex
+	symbols   []string
 	snapshots map[string]bookSnapshot
 	bookSvc   *Service
-	provider  symbolProvider
 	notifier  *telegram.Notifier
 	threadID  int
 	cfg       AlertsConfig
@@ -44,7 +38,6 @@ type AlertService struct {
 // NewAlertService создаёт AlertService.
 func NewAlertService(
 	bookSvc *Service,
-	provider symbolProvider,
 	notifier *telegram.Notifier,
 	threadID int,
 	cfg AlertsConfig,
@@ -53,7 +46,6 @@ func NewAlertService(
 	return &AlertService{
 		snapshots: make(map[string]bookSnapshot),
 		bookSvc:   bookSvc,
-		provider:  provider,
 		notifier:  notifier,
 		threadID:  threadID,
 		cfg:       cfg,
@@ -74,15 +66,14 @@ func (s *AlertService) SetSymbols(symbols []string) {
 	copy(s.symbols, symbols)
 }
 
-// Start запускает мониторинг. Блокирует до ctx.Done().
+// Start запускает мониторинг объёма стакана. Блокирует до ctx.Done().
+// Обновление списка символов происходит через OnSymbolsChanged, а не по таймеру.
 func (s *AlertService) Start(ctx context.Context) {
 	// Загружаем начальный список символов без уведомления
 	s.loadInitialSymbols()
 
 	checkTicker := time.NewTicker(time.Duration(s.cfg.CheckIntervalSec) * time.Second)
-	refreshTicker := time.NewTicker(time.Duration(s.cfg.RefreshIntervalMin) * time.Minute)
 	defer checkTicker.Stop()
-	defer refreshTicker.Stop()
 
 	for {
 		select {
@@ -90,16 +81,59 @@ func (s *AlertService) Start(ctx context.Context) {
 			return
 		case <-checkTicker.C:
 			s.checkVolumes(ctx)
-		case <-refreshTicker.C:
-			s.refreshSymbols(ctx)
 		}
 	}
 }
 
-// loadInitialSymbols загружает начальный список символов без отправки уведомлений.
+// OnSymbolsChanged вызывается TopVolatileProvider при изменении топ-листа.
+// Обновляет внутренний список символов и отправляет уведомление в Telegram.
+func (s *AlertService) OnSymbolsChanged(ctx context.Context, added, removed []string) {
+	if len(added) == 0 && len(removed) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	newSymbols := make([]string, 0, len(s.symbols)+len(added))
+	newSymbols = append(newSymbols, s.symbols...)
+
+	// Удаляем выбывшие
+	if len(removed) > 0 {
+		removedSet := make(map[string]struct{}, len(removed))
+		for _, sym := range removed {
+			removedSet[sym] = struct{}{}
+		}
+		filtered := newSymbols[:0]
+		for _, sym := range newSymbols {
+			if _, ok := removedSet[sym]; !ok {
+				filtered = append(filtered, sym)
+			}
+		}
+		newSymbols = filtered
+		for _, sym := range removed {
+			delete(s.snapshots, sym)
+		}
+	}
+
+	// Добавляем новые
+	newSymbols = append(newSymbols, added...)
+	s.symbols = newSymbols
+	s.mu.Unlock()
+
+	s.log.Info("orderbook alerts: symbol list updated",
+		zap.Strings("added", added),
+		zap.Strings("removed", removed),
+	)
+
+	msg := formatSymbolsUpdate(added, removed)
+	s.notifier.SendToThread(ctx, msg, s.threadID)
+}
+
+// loadInitialSymbols логирует начальный список символов без отправки уведомлений.
 func (s *AlertService) loadInitialSymbols() {
-	symbols := s.provider.Symbols()
-	s.SetSymbols(symbols)
+	s.mu.Lock()
+	symbols := make([]string, len(s.symbols))
+	copy(symbols, s.symbols)
+	s.mu.Unlock()
 	s.log.Info("orderbook alerts: initial symbols loaded", zap.Strings("symbols", symbols))
 }
 
@@ -213,51 +247,6 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 	s.notifier.SendToThread(ctx, msg, s.threadID)
 }
 
-// refreshSymbols обновляет список символов из провайдера (без REST-запроса).
-func (s *AlertService) refreshSymbols(ctx context.Context) {
-	newSymbols := s.provider.Symbols()
-
-	s.mu.Lock()
-	oldSet := make(map[string]struct{}, len(s.symbols))
-	for _, sym := range s.symbols {
-		oldSet[sym] = struct{}{}
-	}
-	newSet := make(map[string]struct{}, len(newSymbols))
-	for _, sym := range newSymbols {
-		newSet[sym] = struct{}{}
-	}
-
-	var added, removed []string
-	for sym := range newSet {
-		if _, ok := oldSet[sym]; !ok {
-			added = append(added, sym)
-		}
-	}
-	for sym := range oldSet {
-		if _, ok := newSet[sym]; !ok {
-			removed = append(removed, sym)
-		}
-	}
-
-	s.symbols = newSymbols
-	for _, sym := range removed {
-		delete(s.snapshots, sym)
-	}
-	s.mu.Unlock()
-
-	if len(added) == 0 && len(removed) == 0 {
-		s.log.Debug("orderbook alerts: symbol list unchanged")
-		return
-	}
-
-	s.log.Info("orderbook alerts: symbol list updated",
-		zap.Strings("added", added),
-		zap.Strings("removed", removed),
-	)
-
-	msg := formatSymbolsUpdate(added, removed)
-	s.notifier.SendToThread(ctx, msg, s.threadID)
-}
 
 func formatVolumeAlertBatch(entries []volumeAlertEntry) string {
 	var sb strings.Builder
