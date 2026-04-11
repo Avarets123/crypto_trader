@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/binance"
+	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 )
 
@@ -28,15 +29,16 @@ type bookSnapshot struct {
 
 // AlertService мониторит изменения объёма стакана и список топ-10 монет.
 type AlertService struct {
-	mu         sync.Mutex
-	symbols    []string
-	snapshots  map[string]bookSnapshot
-	bookSvc    *Service
-	restClient topVolatileGetter
-	notifier   *telegram.Notifier
-	threadID   int
-	cfg        AlertsConfig
-	log        *zap.Logger
+	mu          sync.Mutex
+	symbols     []string
+	snapshots   map[string]bookSnapshot
+	bookSvc     *Service
+	restClient  topVolatileGetter
+	notifier    *telegram.Notifier
+	threadID    int
+	cfg         AlertsConfig
+	log         *zap.Logger
+	tradeAgg    *exchange_orders.TradeAggregator
 }
 
 // NewAlertService создаёт AlertService.
@@ -57,6 +59,11 @@ func NewAlertService(
 		cfg:        cfg,
 		log:        log,
 	}
+}
+
+// WithTradeAggregator подключает агрегатор сделок для включения в алерты.
+func (s *AlertService) WithTradeAggregator(agg *exchange_orders.TradeAggregator) {
+	s.tradeAgg = agg
 }
 
 // SetSymbols задаёт начальный список символов для мониторинга.
@@ -170,7 +177,12 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			zap.Float64("change_pct", changePct),
 		)
 
-		msg := formatVolumeAlert(sym, prev.MidPrice, mid, prev.VolumeUSDT, vol, changePct)
+		var trades exchange_orders.TradeStats
+		if s.tradeAgg != nil {
+			trades = s.tradeAgg.Flush(sym)
+		}
+
+		msg := formatVolumeAlert(sym, prev.MidPrice, mid, prev.VolumeUSDT, vol, changePct, trades)
 		s.notifier.SendToThread(ctx, msg, s.threadID)
 	}
 }
@@ -230,7 +242,7 @@ func (s *AlertService) refreshSymbols(ctx context.Context) {
 	s.notifier.SendToThread(ctx, msg, s.threadID)
 }
 
-func formatVolumeAlert(symbol string, prevPrice, currPrice, prevVol, currVol, changePct float64) string {
+func formatVolumeAlert(symbol string, prevPrice, currPrice, prevVol, currVol, changePct float64, trades exchange_orders.TradeStats) string {
 	priceChangePct := 0.0
 	if prevPrice > 0 {
 		priceChangePct = (currPrice - prevPrice) / prevPrice * 100
@@ -243,12 +255,20 @@ func formatVolumeAlert(symbol string, prevPrice, currPrice, prevVol, currVol, ch
 	if changePct < 0 {
 		volSign = ""
 	}
-	return fmt.Sprintf(
+	msg := fmt.Sprintf(
 		"📊 <b>%s</b> — объём стакана изменился\n\nЦена:   $%.2f → $%.2f  (%s%.2f%%)\nОбъём:  %s → %s  (%s%.1f%%)",
 		symbol,
 		prevPrice, currPrice, priceSign, priceChangePct,
 		formatAlertVol(prevVol), formatAlertVol(currVol), volSign, changePct,
 	)
+	if trades.BuyCount > 0 || trades.SellCount > 0 {
+		msg += fmt.Sprintf(
+			"\n\nСделки за интервал:\n🟢 Покупки:  %s  (%d сд.)\n🔴 Продажи: %s  (%d сд.)",
+			formatAlertVol(trades.BuyVolume), trades.BuyCount,
+			formatAlertVol(trades.SellVolume), trades.SellCount,
+		)
+	}
+	return msg
 }
 
 func formatAlertVol(v float64) string {

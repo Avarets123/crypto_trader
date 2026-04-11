@@ -81,9 +81,10 @@ func main() {
 	go sendTopVolatile(ctx, log, binanceRest, tgNotifier, obSvc)
 
 	// --- Orderbook Alerts ---
-	if orderbook.LoadAlertsConfig().Enabled {
-		alertCfg := orderbook.LoadAlertsConfig()
-		alertSvc := orderbook.NewAlertService(
+	var alertSvc *orderbook.AlertService
+	alertCfg := orderbook.LoadAlertsConfig()
+	if alertCfg.Enabled {
+		alertSvc = orderbook.NewAlertService(
 			obSvc,
 			binanceRest,
 			tgNotifier,
@@ -91,15 +92,6 @@ func main() {
 			alertCfg,
 			log.With(zap.String("component", "orderbook-alerts")),
 		)
-		go func() {
-			// Ждём инициализации стаканов перед стартом мониторинга
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-			alertSvc.Start(ctx)
-		}()
 	}
 
 	st := stats.New(ctx, log)
@@ -114,6 +106,12 @@ func main() {
 			eoRepo,
 			log.With(zap.String("component", "exchange-orders")),
 		)
+		// Подключаем агрегатор сделок к алерт-сервису если оба включены
+		if alertSvc != nil {
+			tradeAgg := exchange_orders.NewTradeAggregator()
+			eoFetcher.WithOnTrade(tradeAgg.OnTrade)
+			alertSvc.WithTradeAggregator(tradeAgg)
+		}
 		eoSvc := exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
 		tickers, err := binanceRest.GetTopVolatile(ctx, 10)
 		if err != nil {
@@ -128,6 +126,18 @@ func main() {
 		log.Info("exchange_orders: enabled")
 	} else {
 		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
+	}
+
+	// Запускаем алерт-сервис после инициализации exchange_orders
+	if alertSvc != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			alertSvc.Start(ctx)
+		}()
 	}
 
 	// Пересылаем ошибки в отдельный Telegram-топик

@@ -22,6 +22,7 @@ type Fetcher struct {
 	exchange string
 	wsBase   string
 	repo     *Repository
+	onTrade  func(ExchangeOrder)
 	log      *zap.Logger
 }
 
@@ -35,6 +36,11 @@ func NewFetcher(exchange, wsBase string, repo *Repository, log *zap.Logger) *Fet
 		repo:     repo,
 		log:      log,
 	}
+}
+
+// WithOnTrade устанавливает хук, вызываемый на каждой входящей сделке.
+func (f *Fetcher) WithOnTrade(fn func(ExchangeOrder)) {
+	f.onTrade = fn
 }
 
 // Subscribe открывает WS-стрим <symbol>@trade и сохраняет каждую сделку в БД батчами.
@@ -147,6 +153,9 @@ func (f *Fetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbol str
 				continue
 			}
 			buf = append(buf, *order)
+			if f.onTrade != nil {
+				f.onTrade(*order)
+			}
 			if len(buf) >= flushSize {
 				flush()
 			}
