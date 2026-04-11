@@ -34,6 +34,7 @@ import (
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/momentum"
 	"github.com/osman/bot-traider/internal/trade_strategies/scalping"
+	"github.com/osman/bot-traider/internal/trade_strategies/volatile"
 )
 
 func main() {
@@ -104,6 +105,8 @@ func main() {
 	st := stats.New(ctx, log)
 
 	// --- Exchange Orders ---
+	// tradeAgg объявлен здесь чтобы volatile стратегия могла получить к нему доступ.
+	var tradeAgg *exchange_orders.TradeAggregator
 	var eoSvc *exchange_orders.Service
 	if sharedconfig.GetEnvBool("EXCHANGE_ORDERS_ENABLED", false) {
 		eoRepo := exchange_orders.NewRepository(pool, log.With(zap.String("component", "exchange-orders")))
@@ -114,10 +117,9 @@ func main() {
 			eoRepo,
 			log.With(zap.String("component", "exchange-orders")),
 		)
-		// Подключаем агрегатор сделок к алерт-сервису если оба включены
+		tradeAgg = exchange_orders.NewTradeAggregator()
+		eoFetcher.WithOnTrade(tradeAgg.OnTrade)
 		if alertSvc != nil {
-			tradeAgg := exchange_orders.NewTradeAggregator()
-			eoFetcher.WithOnTrade(tradeAgg.OnTrade)
 			alertSvc.WithTradeAggregator(tradeAgg)
 		}
 		eoSvc = exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
@@ -127,10 +129,11 @@ func main() {
 		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
 	}
 
-	// Объявляем переменные клиентов заранее — хук захватит их по ссылке.
-	// Сами клиенты создаются позже, после инициализации tickerService.
+	// Объявляем переменные заранее — хук захватит их по ссылке.
+	// Сами сервисы создаются позже, после инициализации tickerService.
 	var binanceTickerClient *binance.Client
 	var bybitTickerClient *bybit.Client
+	var volatileSvc *volatile.Service
 
 	// Подписываемся на изменения топ-листа: обновляем стаканы, подписки exchange_orders и тикеры.
 	// Хук регистрируется после создания всех зависимых сервисов.
@@ -142,6 +145,9 @@ func main() {
 		}
 		if alertSvc != nil {
 			alertSvc.OnSymbolsChanged(ctx, added, removed)
+		}
+		if volatileSvc != nil {
+			volatileSvc.OnSymbolsChanged(added, removed)
 		}
 		if binanceTickerClient != nil {
 			binanceTickerClient.NotifySymbolsChanged(all)
@@ -234,6 +240,26 @@ func main() {
 	tickerService.WithOnSend(det.Update)
 	tickerService.WithOnSend(cmp.Update)
 
+
+	// --- Volatile стратегия (со��ственный цикл, прямой доступ к стакану) ---
+	volatileCfg := volatile.LoadConfig()
+	if volatileCfg.Enabled {
+		volatileSvc = volatile.New(ctx, volatileCfg, tradeSvc, obSvc, log.With(zap.String("component", "volatile")))
+		if tradeAgg != nil {
+			volatileSvc.WithTradeAggregator(tradeAgg)
+		}
+		volatileSvc.SetSymbols(topProvider.Symbols())
+		det.WithOnCrashEvent(volatileSvc.OnCrashEvent)
+		tickerService.WithOnSend(volatileSvc.OnTicker)
+		go volatileSvc.Start(ctx)
+		log.Info("volatile strategy enabled",
+			zap.String("exchange", volatileCfg.Exchange),
+			zap.Float64("bull_score_min", volatileCfg.BullScoreMin),
+			zap.Int("check_interval_sec", volatileCfg.CheckIntervalSec),
+		)
+	} else {
+		log.Info("volatile strategy disabled (VOLATILE_ENABLED=false)")
+	}
 
 	// --- Momentum стратегия ---
 	momentumCfg := momentum.LoadConfig()
