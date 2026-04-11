@@ -18,8 +18,8 @@ type Config struct {
 // LoadConfig читает конфигурацию детектора из переменных окружения.
 func LoadConfig() Config {
 	return Config{
-		PumpThresholdPct:    sharedconfig.GetEnvFloat("PUMP_THRESHOLD_PCT", 3.0),
-		CrashThresholdPct:   sharedconfig.GetEnvFloat("CRASH_THRESHOLD_PCT", 3.0),
+		PumpThresholdPct:    sharedconfig.GetEnvFloat("PUMP_THRESHOLD_PCT", 33.0),
+		CrashThresholdPct:   sharedconfig.GetEnvFloat("CRASH_THRESHOLD_PCT", 33.0),
 		WindowSec:           sharedconfig.GetEnvInt("DETECTOR_WINDOW_SEC", 60),
 		VolumeSpikeRatio:    sharedconfig.GetEnvFloat("VOLUME_SPIKE_RATIO", 3.0),
 		VolumeWindowSize:    sharedconfig.GetEnvInt("VOLUME_WINDOW_SIZE", 100),

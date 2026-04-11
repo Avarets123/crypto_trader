@@ -3,7 +3,7 @@ package orderbook
 import (
 	"context"
 	"fmt"
-	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,7 +27,8 @@ type bookSnapshot struct {
 type AlertService struct {
 	mu        sync.Mutex
 	symbols   []string
-	snapshots map[string]bookSnapshot
+	baselines map[string]bookSnapshot // базовый снимок с момента подписки на символ
+	currents  map[string]bookSnapshot // последний снимок (для хранения текущих значений)
 	bookSvc   *Service
 	notifier  *telegram.Notifier
 	threadID  int
@@ -45,7 +46,8 @@ func NewAlertService(
 	log *zap.Logger,
 ) *AlertService {
 	return &AlertService{
-		snapshots: make(map[string]bookSnapshot),
+		baselines: make(map[string]bookSnapshot),
+		currents:  make(map[string]bookSnapshot),
 		bookSvc:   bookSvc,
 		notifier:  notifier,
 		threadID:  threadID,
@@ -111,7 +113,8 @@ func (s *AlertService) OnSymbolsChanged(ctx context.Context, added, removed []st
 		}
 		newSymbols = filtered
 		for _, sym := range removed {
-			delete(s.snapshots, sym)
+			delete(s.baselines, sym)
+			delete(s.currents, sym)
 		}
 	}
 
@@ -193,35 +196,30 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 		}
 
 		obi := CalcOBI(bidVol, askVol)
+		curr := bookSnapshot{BidVol: bidVol, AskVol: askVol, MidPrice: mid, OBI: obi}
 
 		s.mu.Lock()
-		prev, hasPrev := s.snapshots[sym]
-		s.snapshots[sym] = bookSnapshot{BidVol: bidVol, AskVol: askVol, MidPrice: mid, OBI: obi}
+		baseline, hasBaseline := s.baselines[sym]
+		if !hasBaseline {
+			// Первый тик — фиксируем baseline, алерт не отправляем
+			s.baselines[sym] = curr
+			s.currents[sym] = curr
+			s.mu.Unlock()
+			s.log.Debug("orderbook alerts: baseline set", zap.String("symbol", sym))
+			continue
+		}
+		s.currents[sym] = curr
 		s.mu.Unlock()
 
-		// Первый тик — сохраняем без уведомления
-		if !hasPrev {
-			s.log.Debug("orderbook alerts: first snapshot", zap.String("symbol", sym))
-			continue
+		prevVol := baseline.BidVol + baseline.AskVol
+		changePct := 0.0
+		if prevVol > 0 {
+			changePct = (vol - prevVol) / prevVol * 100
 		}
 
-		prevVol := prev.BidVol + prev.AskVol
-		if prevVol == 0 {
-			continue
-		}
-
-		changePct := (vol - prevVol) / prevVol * 100
-		if math.Abs(changePct) < s.cfg.VolumeChangePct {
-			s.log.Debug("orderbook alerts: no significant change",
-				zap.String("symbol", sym),
-				zap.Float64("change_pct", changePct),
-			)
-			continue
-		}
-
-		s.log.Info("orderbook alerts: volume spike detected",
+		s.log.Debug("orderbook alerts: snapshot",
 			zap.String("symbol", sym),
-			zap.Float64("prev_vol", prevVol),
+			zap.Float64("baseline_vol", prevVol),
 			zap.Float64("curr_vol", vol),
 			zap.Float64("change_pct", changePct),
 		)
@@ -233,14 +231,14 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 
 		entries = append(entries, volumeAlertEntry{
 			symbol:     sym,
-			prevPrice:  prev.MidPrice,
+			prevPrice:  baseline.MidPrice,
 			currPrice:  mid,
-			prevBidVol: prev.BidVol,
+			prevBidVol: baseline.BidVol,
 			currBidVol: bidVol,
-			prevAskVol: prev.AskVol,
+			prevAskVol: baseline.AskVol,
 			currAskVol: askVol,
 			changePct:  changePct,
-			prevOBI:    prev.OBI,
+			prevOBI:    baseline.OBI,
 			currOBI:    obi,
 			trades:     trades,
 		})
@@ -249,6 +247,10 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 	if len(entries) == 0 {
 		return
 	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].currOBI > entries[j].currOBI
+	})
 
 	msg := formatVolumeAlertBatch(entries)
 	s.notifier.SendToThread(ctx, msg, s.threadID)
