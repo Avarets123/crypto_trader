@@ -77,10 +77,16 @@ func main() {
 		log.With(zap.String("component", "orderbook")),
 	)
 	obSvc := orderbook.NewService(obFetcher, obStore, log.With(zap.String("component", "orderbook")))
-	tickers, err := binanceRest.GetTopVolatile(ctx, 10)
 
+	// --- Top Volatile Provider — единственный источник топ-10 монет ---
+	symbolRefresh := time.Duration(sharedconfig.GetEnvInt("SYMBOL_REFRESH_MIN", 30)) * time.Minute
+	topProvider := binance.NewTopVolatileProvider(binanceRest, 10, log.With(zap.String("component", "top-volatile")))
+	if err := topProvider.Fetch(ctx); err != nil {
+		log.Fatal("top volatile: initial fetch failed", zap.Error(err))
+	}
+	go topProvider.Run(ctx, symbolRefresh)
 
-	go sendTopVolatile(ctx, log, tickers, tgNotifier, obSvc)
+	go sendTopVolatile(ctx, log, topProvider.Tickers(), tgNotifier, obSvc)
 
 	// --- Orderbook Alerts ---
 	var alertSvc *orderbook.AlertService
@@ -88,7 +94,7 @@ func main() {
 	if alertCfg.Enabled {
 		alertSvc = orderbook.NewAlertService(
 			obSvc,
-			binanceRest,
+			topProvider,
 			tgNotifier,
 			sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0),
 			alertCfg,
@@ -115,15 +121,7 @@ func main() {
 			alertSvc.WithTradeAggregator(tradeAgg)
 		}
 		eoSvc := exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
-		if err != nil {
-			log.Error("exchange_orders: failed to get top volatile", zap.Error(err))
-		} else {
-			symbols := make([]string, len(tickers))
-			for i, t := range tickers {
-				symbols[i] = t.Symbol
-			}
-			eoSvc.Start(ctx, symbols)
-		}
+		eoSvc.Start(ctx, topProvider.Symbols())
 		log.Info("exchange_orders: enabled")
 	} else {
 		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
@@ -294,19 +292,13 @@ func main() {
 	tickerService.WithOnSend(volDetector.OnTicker)
 
 
-	watchSymbols := make([]string, 0, len(tickers))
-	for _, s := range tickers {
-		watchSymbols = append(watchSymbols, s.Symbol)
-	}
-
-	watchExchanges(ctx, log, st, tickerService, watchSymbols)
+	watchExchanges(ctx, log, st, tickerService, topProvider)
 }
 
-func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, tickerService *ticker.TickerService, symbols []string) {
-	// Оба клиента подписываются только на топ-10 волатильных монет (по данным Binance).
-	topVolatileFetcher := func(ctx context.Context) ([]string, error) {
-		return symbols, nil
-	}
+func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, tickerService *ticker.TickerService, provider *binance.TopVolatileProvider) {
+	// Оба клиента подписываются только на топ-10 волатильных монет.
+	// Список берётся из провайдера (кэш, без REST); при изменении соединения пересоздаются.
+	topVolatileFetcher := provider.FetchSymbols
 
 	bybitCfg := bybit.LoadConfig()
 	log.Info("bybit config loaded", zap.Bool("enabled", bybitCfg.Enabled))

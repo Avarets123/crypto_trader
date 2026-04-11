@@ -11,14 +11,13 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/osman/bot-traider/internal/binance"
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 )
 
-// topVolatileGetter — интерфейс для получения топ волатильных монет.
-type topVolatileGetter interface {
-	GetTopVolatile(ctx context.Context, limit int) ([]binance.VolatileTicker, error)
+// symbolProvider — интерфейс для получения текущего списка символов из кэша.
+type symbolProvider interface {
+	Symbols() []string
 }
 
 // bookSnapshot — снимок объёма и цены стакана в момент времени.
@@ -29,35 +28,35 @@ type bookSnapshot struct {
 
 // AlertService мониторит изменения объёма стакана и список топ-10 монет.
 type AlertService struct {
-	mu          sync.Mutex
-	symbols     []string
-	snapshots   map[string]bookSnapshot
-	bookSvc     *Service
-	restClient  topVolatileGetter
-	notifier    *telegram.Notifier
-	threadID    int
-	cfg         AlertsConfig
-	log         *zap.Logger
-	tradeAgg    *exchange_orders.TradeAggregator
+	mu       sync.Mutex
+	symbols  []string
+	snapshots map[string]bookSnapshot
+	bookSvc   *Service
+	provider  symbolProvider
+	notifier  *telegram.Notifier
+	threadID  int
+	cfg       AlertsConfig
+	log       *zap.Logger
+	tradeAgg  *exchange_orders.TradeAggregator
 }
 
 // NewAlertService создаёт AlertService.
 func NewAlertService(
 	bookSvc *Service,
-	restClient topVolatileGetter,
+	provider symbolProvider,
 	notifier *telegram.Notifier,
 	threadID int,
 	cfg AlertsConfig,
 	log *zap.Logger,
 ) *AlertService {
 	return &AlertService{
-		snapshots:  make(map[string]bookSnapshot),
-		bookSvc:    bookSvc,
-		restClient: restClient,
-		notifier:   notifier,
-		threadID:   threadID,
-		cfg:        cfg,
-		log:        log,
+		snapshots: make(map[string]bookSnapshot),
+		bookSvc:   bookSvc,
+		provider:  provider,
+		notifier:  notifier,
+		threadID:  threadID,
+		cfg:       cfg,
+		log:       log,
 	}
 }
 
@@ -77,7 +76,7 @@ func (s *AlertService) SetSymbols(symbols []string) {
 // Start запускает мониторинг. Блокирует до ctx.Done().
 func (s *AlertService) Start(ctx context.Context) {
 	// Загружаем начальный список символов без уведомления
-	s.loadInitialSymbols(ctx)
+	s.loadInitialSymbols()
 
 	checkTicker := time.NewTicker(time.Duration(s.cfg.CheckIntervalSec) * time.Second)
 	refreshTicker := time.NewTicker(time.Duration(s.cfg.RefreshIntervalMin) * time.Minute)
@@ -97,16 +96,8 @@ func (s *AlertService) Start(ctx context.Context) {
 }
 
 // loadInitialSymbols загружает начальный список символов без отправки уведомлений.
-func (s *AlertService) loadInitialSymbols(ctx context.Context) {
-	tickers, err := s.restClient.GetTopVolatile(ctx, 10)
-	if err != nil {
-		s.log.Warn("orderbook alerts: failed to load initial symbols", zap.Error(err))
-		return
-	}
-	symbols := make([]string, len(tickers))
-	for i, t := range tickers {
-		symbols[i] = t.Symbol
-	}
+func (s *AlertService) loadInitialSymbols() {
+	symbols := s.provider.Symbols()
 	s.SetSymbols(symbols)
 	s.log.Info("orderbook alerts: initial symbols loaded", zap.Strings("symbols", symbols))
 }
@@ -215,18 +206,9 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 	s.notifier.SendToThread(ctx, msg, s.threadID)
 }
 
-// refreshSymbols обновляет список топ-10 волатильных монет.
+// refreshSymbols обновляет список символов из провайдера (без REST-запроса).
 func (s *AlertService) refreshSymbols(ctx context.Context) {
-	tickers, err := s.restClient.GetTopVolatile(ctx, 10)
-	if err != nil {
-		s.log.Warn("orderbook alerts: failed to refresh symbols", zap.Error(err))
-		return
-	}
-
-	newSymbols := make([]string, len(tickers))
-	for i, t := range tickers {
-		newSymbols[i] = t.Symbol
-	}
+	newSymbols := s.provider.Symbols()
 
 	s.mu.Lock()
 	oldSet := make(map[string]struct{}, len(s.symbols))
