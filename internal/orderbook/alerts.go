@@ -20,6 +20,7 @@ type bookSnapshot struct {
 	BidVol   float64
 	AskVol   float64
 	MidPrice float64
+	OBI      float64
 }
 
 // AlertService мониторит изменения объёма стакана и список топ-15 монет.
@@ -147,6 +148,8 @@ type volumeAlertEntry struct {
 	prevAskVol  float64
 	currAskVol  float64
 	changePct   float64
+	prevOBI     float64
+	currOBI     float64
 	trades      exchange_orders.TradeStats
 }
 
@@ -189,9 +192,11 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			mid = (bp + ap) / 2
 		}
 
+		obi := CalcOBI(bidVol, askVol)
+
 		s.mu.Lock()
 		prev, hasPrev := s.snapshots[sym]
-		s.snapshots[sym] = bookSnapshot{BidVol: bidVol, AskVol: askVol, MidPrice: mid}
+		s.snapshots[sym] = bookSnapshot{BidVol: bidVol, AskVol: askVol, MidPrice: mid, OBI: obi}
 		s.mu.Unlock()
 
 		// Первый тик — сохраняем без уведомления
@@ -235,6 +240,8 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			prevAskVol: prev.AskVol,
 			currAskVol: askVol,
 			changePct:  changePct,
+			prevOBI:    prev.OBI,
+			currOBI:    obi,
 			trades:     trades,
 		})
 	}
@@ -266,13 +273,18 @@ func formatVolumeAlertBatch(entries []volumeAlertEntry) string {
 			totalSign = ""
 		}
 
+		obiSign := ""
+		if e.currOBI >= 0 {
+			obiSign = "+"
+		}
 		sb.WriteString(fmt.Sprintf(
-			"\n<b>%s</b>\nЦена:    $%.2f → $%.2f  (%s%.2f%%)\nПокупка: %s → %s\nПродажа: %s → %s\nИтого:   %s → %s  (%s%.1f%%)",
+			"\n<b>%s</b>\nЦена:    $%.2f → $%.2f  (%s%.2f%%)\nПокупка: %s → %s\nПродажа: %s → %s\nИтого:   %s → %s  (%s%.1f%%)\nOBI:     %s%.2f → %s%s%.2f",
 			e.symbol,
 			e.prevPrice, e.currPrice, priceSign, priceChangePct,
 			formatAlertVol(e.prevBidVol), formatAlertVol(e.currBidVol),
 			formatAlertVol(e.prevAskVol), formatAlertVol(e.currAskVol),
 			formatAlertVol(e.prevBidVol+e.prevAskVol), formatAlertVol(e.currBidVol+e.currAskVol), totalSign, e.changePct,
+			formatOBI(e.prevOBI), e.prevOBI, OBISignal(e.currOBI), obiSign, e.currOBI,
 		))
 		if e.trades.BuyCount > 0 || e.trades.SellCount > 0 {
 			sb.WriteString(fmt.Sprintf(
@@ -285,6 +297,14 @@ func formatVolumeAlertBatch(entries []volumeAlertEntry) string {
 	}
 
 	return sb.String()
+}
+
+// formatOBI возвращает строку вида "+0.42" или "-0.15" (без эмодзи).
+func formatOBI(obi float64) string {
+	if obi >= 0 {
+		return fmt.Sprintf("+%.2f ", obi)
+	}
+	return fmt.Sprintf("%.2f ", obi)
 }
 
 func formatAlertVol(v float64) string {
