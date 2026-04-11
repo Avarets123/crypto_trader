@@ -24,13 +24,14 @@ type Service struct {
 	ctx      context.Context
 	client   exchange.RestClient
 	tracker  *GridTracker
-	notifier *telegram.Notifier
-	log      *zap.Logger
-	repo     *GridRepository // nil если persistence не настроена
+	notifier       *telegram.Notifier
+	tradesThreadID int
+	log            *zap.Logger
+	repo           *GridRepository // nil если persistence не настроена
 }
 
 // NewService создаёт Service.
-func NewService(cfg Config, client exchange.RestClient, log *zap.Logger, notifier *telegram.Notifier) *Service {
+func NewService(cfg Config, client exchange.RestClient, log *zap.Logger, notifier *telegram.Notifier, tradesThreadID int) *Service {
 	if cfg.Grids < 5 || cfg.Grids > 50 {
 		log.Warn("grid: invalid GRID_GRIDS value, using default 20",
 			zap.Int("grids", cfg.Grids),
@@ -51,11 +52,12 @@ func NewService(cfg Config, client exchange.RestClient, log *zap.Logger, notifie
 	)
 
 	return &Service{
-		cfg:      cfg,
-		client:   client,
-		tracker:  NewGridTracker(),
-		notifier: notifier,
-		log:      log,
+		cfg:            cfg,
+		client:         client,
+		tracker:        NewGridTracker(),
+		notifier:       notifier,
+		tradesThreadID: tradesThreadID,
+		log:            log,
 	}
 }
 
@@ -267,7 +269,7 @@ func (s *Service) startGrid(ctx context.Context, symbol string, currentPrice flo
 		qty, formatGridPrice(notional),
 		placed, buyLevels,
 	)
-	go s.notifier.Send(ctx, msg)
+	go s.notifier.SendToThread(ctx, msg, s.tradesThreadID)
 
 	// Запускаем мониторинг сетки
 	go s.watchGrid(ctx, symbol)
@@ -400,7 +402,7 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 			state.TotalPnL, state.FilledCycles,
 		)
 	}
-	go s.notifier.Send(ctx, msg)
+	go s.notifier.SendToThread(ctx, msg, s.tradesThreadID)
 
 	switch side {
 	case "buy":
@@ -499,7 +501,7 @@ func (s *Service) emergencyClose(ctx context.Context, symbol string, triggerPric
 		pnlSign, state.TotalPnL,
 		s.cfg.CooldownSec,
 	)
-	go s.notifier.Send(ctx, msg)
+	go s.notifier.SendToThread(ctx, msg, s.tradesThreadID)
 
 	// Перезапускаем сетку через cooldown
 	s.log.Info("grid: will restart after cooldown",
@@ -576,7 +578,7 @@ func (s *Service) shiftGridUp(ctx context.Context, symbol string, currentPrice f
 		holdMin, state.FilledCycles,
 		pnlSign, state.TotalPnL,
 	)
-	go s.notifier.Send(ctx, msg)
+	go s.notifier.SendToThread(ctx, msg, s.tradesThreadID)
 
 	go s.startGrid(ctx, symbol, currentPrice)
 }

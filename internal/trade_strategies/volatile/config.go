@@ -22,7 +22,7 @@ type Config struct {
 func LoadConfig() Config {
 	return Config{
 		Enabled:          sharedconfig.GetEnvBool("VOLATILE_ENABLED", false),
-		Exchange:         sharedconfig.GetEnv("VOLATILE_EXCHANGE", "bybit"),
+		Exchange:         sharedconfig.GetEnv("VOLATILE_EXCHANGE", "binance"),
 		BullScoreMin:     sharedconfig.GetEnvFloat("VOLATILE_BULL_SCORE_MIN", 0.45),
 		CheckIntervalSec: sharedconfig.GetEnvInt("VOLATILE_CHECK_INTERVAL_SEC", 5),
 		TradeWindowSec:   sharedconfig.GetEnvInt("VOLATILE_TRADE_WINDOW_SEC", 300),

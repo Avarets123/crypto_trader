@@ -205,7 +205,11 @@ func main() {
 
 	restClients := map[string]exchange.RestClient{
 		"binance": binanceRest,
-		"bybit":   bybitRest,
+	}
+	if sharedconfig.GetEnv("BYBIT_API_KEY", "") != "" {
+		restClients["bybit"] = bybitRest
+	} else {
+		log.Warn("bybit api key not set, bybit trading disabled")
 	}
 
 	tradeSvc := trade.NewService(
@@ -303,7 +307,7 @@ func main() {
 			log.Fatal("grid: unknown exchange in GRID_EXCHANGE",
 				zap.String("exchange", gridCfg.Exchange))
 		}
-		gridSvc := grid.NewService(gridCfg, gridClient, log.With(zap.String("component", "grid")), tgNotifier)
+		gridSvc := grid.NewService(gridCfg, gridClient, log.With(zap.String("component", "grid")), tgNotifier, tradesThreadID)
 		gridSvc.WithRepository(grid.NewGridRepository(pool))
 		gridSvc.Start(ctx)
 		tickerService.WithOnSend(gridSvc.OnTicker)
@@ -490,6 +494,7 @@ func initTg(ctx context.Context, log *zap.Logger) (*telegram.Notifier, *telegram
 		ctx,
 		tg,
 		sharedconfig.GetEnvInt("TELEGRAM_AGGREGATE_SEC", 30),
+		sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0),
 		log.With(zap.String("component", "telegram")),
 	)
 	return tg, agg

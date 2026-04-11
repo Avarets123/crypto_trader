@@ -43,18 +43,20 @@ type Aggregator struct {
 	mu        sync.Mutex
 	ctx       context.Context
 	notifier  *Notifier
+	threadID  int
 	windowDur time.Duration
 	buf       []Event
 	timer     *time.Timer
 	log       *zap.Logger
 }
 
-// NewAggregator создаёт Aggregator с заданным окном агрегации.
-func NewAggregator(ctx context.Context, n *Notifier, windowSec int, log *zap.Logger) *Aggregator {
-	log.Info("telegram aggregator created", zap.Int("window_sec", windowSec))
+// NewAggregator создаёт Aggregator с заданным окном агрегации и топиком (threadID=0 — без топика).
+func NewAggregator(ctx context.Context, n *Notifier, windowSec int, threadID int, log *zap.Logger) *Aggregator {
+	log.Info("telegram aggregator created", zap.Int("window_sec", windowSec), zap.Int("thread_id", threadID))
 	return &Aggregator{
 		ctx:       ctx,
 		notifier:  n,
+		threadID:  threadID,
 		windowDur: time.Duration(windowSec) * time.Second,
 		log:       log,
 	}
@@ -135,7 +137,7 @@ func (a *Aggregator) flush() {
 		return
 	}
 
-	a.notifier.Send(a.ctx, formatSummary(events))
+	a.notifier.SendToThread(a.ctx, formatSummary(events), a.threadID)
 }
 
 // deduplicateBySymbol оставляет для каждого symbol|exchange только последнее событие.
