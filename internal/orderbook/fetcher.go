@@ -147,7 +147,7 @@ draining:
 			// Обнаружен gap: WS опередил снимок.
 			// Принимаем gap без REST-запроса — стакан восстановится из дельт за несколько секунд.
 			if d.FirstUpdateID > snap.LastUpdateID+1 {
-				f.log.Warn("orderbook diff: sync gap, accepting and continuing",
+				f.log.Debug("orderbook diff: sync gap, accepting and continuing",
 					zap.String("symbol", symbol),
 					zap.Int64("U", d.FirstUpdateID),
 					zap.Int64("lastUpdateID", snap.LastUpdateID),

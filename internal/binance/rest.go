@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/osman/bot-traider/internal/blacklist"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/exchange"
 )
@@ -484,6 +485,9 @@ func (c *RestClient) GetTopVolatile(ctx context.Context, limit int) ([]VolatileT
 	tickers := make([]VolatileTicker, 0, len(raw))
 	for _, r := range raw {
 		if !strings.HasSuffix(r.Symbol, "USDT") {
+			continue
+		}
+		if blacklist.IsBlacklisted(r.Symbol) {
 			continue
 		}
 		pct, _ := strconv.ParseFloat(r.PriceChangePercent, 64)
