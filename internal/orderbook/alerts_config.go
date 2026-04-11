@@ -8,6 +8,7 @@ type AlertsConfig struct {
 	VolumeChangePct    float64
 	CheckIntervalSec   int
 	RefreshIntervalMin int
+	TradeWindowSec     int // размер скользящего окна для статистики сделок (сек)
 }
 
 // LoadAlertsConfig читает конфигурацию из env-переменных.
@@ -17,5 +18,6 @@ func LoadAlertsConfig() AlertsConfig {
 		VolumeChangePct:    sharedconfig.GetEnvFloat("ORDERBOOK_VOLUME_CHANGE_PCT", 20.0),
 		CheckIntervalSec:   sharedconfig.GetEnvInt("ORDERBOOK_CHECK_INTERVAL_SEC", 30),
 		RefreshIntervalMin: sharedconfig.GetEnvInt("ORDERBOOK_REFRESH_INTERVAL_MIN", 5),
+		TradeWindowSec:     sharedconfig.GetEnvInt("ORDERBOOK_TRADE_WINDOW_SEC", 300),
 	}
 }

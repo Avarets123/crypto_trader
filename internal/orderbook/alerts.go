@@ -237,28 +237,46 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			zap.Float64("change_pct", changePct),
 		)
 
+		// Суммарная статистика сделок с baseline — для отображения в алерте.
 		var trades exchange_orders.TradeStats
+		// Статистика за скользящее окно — для сигналов (агрессивность, TFI, VolImb).
+		var win exchange_orders.TradeStats
 		if s.tradeAgg != nil {
 			trades = s.tradeAgg.Get(sym)
+			win = s.tradeAgg.GetWindow(sym, time.Duration(s.cfg.TradeWindowSec)*time.Second)
 		}
 
-		// Trade Flow Imbalance: реальные исполненные сделки, не спуфится.
+		// Trade Flow Imbalance: реальные исполненные сделки за окно, не спуфится.
 		tfi := 0.0
-		if tc := float64(trades.BuyCount + trades.SellCount); tc > 0 {
-			tfi = float64(trades.BuyCount-trades.SellCount) / tc
+		if tc := float64(win.BuyCount + win.SellCount); tc > 0 {
+			tfi = float64(win.BuyCount-win.SellCount) / tc
 		}
-		// Volume Imbalance: объём реальных сделок.
+		// Volume Imbalance: объём реальных сделок за окно.
 		volImb := 0.0
-		if tv := trades.BuyVolume + trades.SellVolume; tv > 0 {
-			volImb = (trades.BuyVolume - trades.SellVolume) / tv
+		if tv := win.BuyVolume + win.SellVolume; tv > 0 {
+			volImb = (win.BuyVolume - win.SellVolume) / tv
 		}
 		// AskDrain: продавцы уходят из стакана → bullish (>0) или приходят → bearish (<0).
 		askDrain := 0.0
 		if baseline.AskVol > 0 {
 			askDrain = clampF((baseline.AskVol-askVol)/baseline.AskVol, -1, 1)
 		}
+		// AggrRatio: средний размер покупки vs продажи за окно.
+		// Крупные покупки при малом количестве → кит набирает позицию.
+		aggrRatio := 0.0
+		if win.BuyCount > 0 && win.SellCount > 0 {
+			avgBuy := win.BuyVolume / float64(win.BuyCount)
+			avgSell := win.SellVolume / float64(win.SellCount)
+			if total := avgBuy + avgSell; total > 0 {
+				aggrRatio = (avgBuy - avgSell) / total
+			}
+		} else if win.BuyCount > 0 {
+			aggrRatio = 1.0
+		} else if win.SellCount > 0 {
+			aggrRatio = -1.0
+		}
 
-		bullScore := CalcBullScore(obi, obi-baseline.OBI, tfi, volImb, askDrain)
+		bullScore := CalcBullScore(obi, obi-baseline.OBI, tfi, volImb, askDrain, aggrRatio)
 
 		entries = append(entries, volumeAlertEntry{
 			symbol:     sym,
