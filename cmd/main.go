@@ -294,8 +294,7 @@ func main() {
 	tickerService.WithOnSend(volDetector.OnTicker)
 
 
-	watchSymbols := make([]string, 10)
-
+	watchSymbols := make([]string, 0, len(tickers))
 	for _, s := range tickers {
 		watchSymbols = append(watchSymbols, s.Symbol)
 	}
