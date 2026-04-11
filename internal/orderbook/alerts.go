@@ -111,12 +111,26 @@ func (s *AlertService) loadInitialSymbols(ctx context.Context) {
 	s.log.Info("orderbook alerts: initial symbols loaded", zap.Strings("symbols", symbols))
 }
 
-// checkVolumes проверяет изменение объёма стакана для каждого символа.
+// volumeAlertEntry — данные одного символа для сводного алерта.
+type volumeAlertEntry struct {
+	symbol     string
+	prevPrice  float64
+	currPrice  float64
+	prevVol    float64
+	currVol    float64
+	changePct  float64
+	trades     exchange_orders.TradeStats
+}
+
+// checkVolumes проверяет изменение объёма стакана для каждого символа
+// и отправляет одно сводное сообщение по всем изменениям.
 func (s *AlertService) checkVolumes(ctx context.Context) {
 	s.mu.Lock()
 	symbols := make([]string, len(s.symbols))
 	copy(symbols, s.symbols)
 	s.mu.Unlock()
+
+	var entries []volumeAlertEntry
 
 	for _, sym := range symbols {
 		ob, ok := s.bookSvc.GetBook(sym)
@@ -182,9 +196,23 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			trades = s.tradeAgg.Flush(sym)
 		}
 
-		msg := formatVolumeAlert(sym, prev.MidPrice, mid, prev.VolumeUSDT, vol, changePct, trades)
-		s.notifier.SendToThread(ctx, msg, s.threadID)
+		entries = append(entries, volumeAlertEntry{
+			symbol:    sym,
+			prevPrice: prev.MidPrice,
+			currPrice: mid,
+			prevVol:   prev.VolumeUSDT,
+			currVol:   vol,
+			changePct: changePct,
+			trades:    trades,
+		})
 	}
+
+	if len(entries) == 0 {
+		return
+	}
+
+	msg := formatVolumeAlertBatch(entries)
+	s.notifier.SendToThread(ctx, msg, s.threadID)
 }
 
 // refreshSymbols обновляет список топ-10 волатильных монет.
@@ -242,33 +270,41 @@ func (s *AlertService) refreshSymbols(ctx context.Context) {
 	s.notifier.SendToThread(ctx, msg, s.threadID)
 }
 
-func formatVolumeAlert(symbol string, prevPrice, currPrice, prevVol, currVol, changePct float64, trades exchange_orders.TradeStats) string {
-	priceChangePct := 0.0
-	if prevPrice > 0 {
-		priceChangePct = (currPrice - prevPrice) / prevPrice * 100
+func formatVolumeAlertBatch(entries []volumeAlertEntry) string {
+	var sb strings.Builder
+	sb.WriteString("📊 <b>Изменения объёма стакана</b>\n")
+
+	for _, e := range entries {
+		priceChangePct := 0.0
+		if e.prevPrice > 0 {
+			priceChangePct = (e.currPrice - e.prevPrice) / e.prevPrice * 100
+		}
+		priceSign := "+"
+		if priceChangePct < 0 {
+			priceSign = ""
+		}
+		volSign := "+"
+		if e.changePct < 0 {
+			volSign = ""
+		}
+
+		sb.WriteString(fmt.Sprintf(
+			"\n<b>%s</b>\nЦена:   $%.2f → $%.2f  (%s%.2f%%)\nОбъём:  %s → %s  (%s%.1f%%)",
+			e.symbol,
+			e.prevPrice, e.currPrice, priceSign, priceChangePct,
+			formatAlertVol(e.prevVol), formatAlertVol(e.currVol), volSign, e.changePct,
+		))
+		if e.trades.BuyCount > 0 || e.trades.SellCount > 0 {
+			sb.WriteString(fmt.Sprintf(
+				"\n🟢 %s (%d сд.)  🔴 %s (%d сд.)",
+				formatAlertVol(e.trades.BuyVolume), e.trades.BuyCount,
+				formatAlertVol(e.trades.SellVolume), e.trades.SellCount,
+			))
+		}
+		sb.WriteString("\n")
 	}
-	priceSign := "+"
-	if priceChangePct < 0 {
-		priceSign = ""
-	}
-	volSign := "+"
-	if changePct < 0 {
-		volSign = ""
-	}
-	msg := fmt.Sprintf(
-		"📊 <b>%s</b> — объём стакана изменился\n\nЦена:   $%.2f → $%.2f  (%s%.2f%%)\nОбъём:  %s → %s  (%s%.1f%%)",
-		symbol,
-		prevPrice, currPrice, priceSign, priceChangePct,
-		formatAlertVol(prevVol), formatAlertVol(currVol), volSign, changePct,
-	)
-	if trades.BuyCount > 0 || trades.SellCount > 0 {
-		msg += fmt.Sprintf(
-			"\n\nСделки за интервал:\n🟢 Покупки:  %s  (%d сд.)\n🔴 Продажи: %s  (%d сд.)",
-			formatAlertVol(trades.BuyVolume), trades.BuyCount,
-			formatAlertVol(trades.SellVolume), trades.SellCount,
-		)
-	}
-	return msg
+
+	return sb.String()
 }
 
 func formatAlertVol(v float64) string {
