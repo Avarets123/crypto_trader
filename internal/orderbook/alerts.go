@@ -156,6 +156,7 @@ type volumeAlertEntry struct {
 	changePct   float64
 	prevOBI     float64
 	currOBI     float64
+	bullScore   float64
 	trades      exchange_orders.TradeStats
 }
 
@@ -241,6 +242,24 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			trades = s.tradeAgg.Get(sym)
 		}
 
+		// Trade Flow Imbalance: реальные исполненные сделки, не спуфится.
+		tfi := 0.0
+		if tc := float64(trades.BuyCount + trades.SellCount); tc > 0 {
+			tfi = float64(trades.BuyCount-trades.SellCount) / tc
+		}
+		// Volume Imbalance: объём реальных сделок.
+		volImb := 0.0
+		if tv := trades.BuyVolume + trades.SellVolume; tv > 0 {
+			volImb = (trades.BuyVolume - trades.SellVolume) / tv
+		}
+		// AskDrain: продавцы уходят из стакана → bullish (>0) или приходят → bearish (<0).
+		askDrain := 0.0
+		if baseline.AskVol > 0 {
+			askDrain = clampF((baseline.AskVol-askVol)/baseline.AskVol, -1, 1)
+		}
+
+		bullScore := CalcBullScore(obi, obi-baseline.OBI, tfi, volImb, askDrain)
+
 		entries = append(entries, volumeAlertEntry{
 			symbol:     sym,
 			prevPrice:  baseline.MidPrice,
@@ -252,6 +271,7 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 			changePct:  changePct,
 			prevOBI:    baseline.OBI,
 			currOBI:    obi,
+			bullScore:  bullScore,
 			trades:     trades,
 		})
 	}
@@ -261,7 +281,7 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].currOBI > entries[j].currOBI
+		return entries[i].bullScore > entries[j].bullScore
 	})
 
 	msg := formatVolumeAlertBatch(entries)
@@ -291,14 +311,19 @@ func formatVolumeAlertBatch(entries []volumeAlertEntry) string {
 		if e.currOBI >= 0 {
 			obiSign = "+"
 		}
+		bullSign := ""
+		if e.bullScore >= 0 {
+			bullSign = "+"
+		}
 		sb.WriteString(fmt.Sprintf(
-			"\n<b>%s</b>\nЦена:    $%.2f → $%.2f  (%s%.2f%%)\nПокупка: %s → %s\nПродажа: %s → %s\nИтого:   %s → %s  (%s%.1f%%)\nOBI:     %s→ %s%s%.2f",
+			"\n<b>%s</b>\nЦена:    $%.2f → $%.2f  (%s%.2f%%)\nПокупка: %s → %s\nПродажа: %s → %s\nИтого:   %s → %s  (%s%.1f%%)\nOBI:     %s→ %s%s%.2f\nСигнал:  %s %s%.2f",
 			e.symbol,
 			e.prevPrice, e.currPrice, priceSign, priceChangePct,
 			formatAlertVol(e.prevBidVol), formatAlertVol(e.currBidVol),
 			formatAlertVol(e.prevAskVol), formatAlertVol(e.currAskVol),
 			formatAlertVol(e.prevBidVol+e.prevAskVol), formatAlertVol(e.currBidVol+e.currAskVol), totalSign, e.changePct,
 			formatOBI(e.prevOBI), OBISignal(e.currOBI), obiSign, e.currOBI,
+			BullSignal(e.bullScore), bullSign, e.bullScore,
 		))
 		if e.trades.BuyCount > 0 || e.trades.SellCount > 0 {
 			sb.WriteString(fmt.Sprintf(
