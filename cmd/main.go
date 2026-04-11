@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"os/signal"
 	"syscall"
 
@@ -351,22 +350,14 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestCli
 }
 
 func formatOrderBook(ob *orderbook.OrderBook) string {
-	const top = 3
-	format := func(entries []orderbook.Entry) string {
-		parts := make([]string, 0, top)
-		for i, e := range entries {
-			if i >= top {
-				break
-			}
-			parts = append(parts, fmt.Sprintf("%s × %s", e.Price, e.Qty))
-		}
-		if len(parts) == 0 {
-			return "—"
-		}
-		return strings.Join(parts, "  |  ")
+	bid, ask := "—", "—"
+	if len(ob.Bids) > 0 {
+		bid = ob.Bids[0].Price
 	}
-
-	return fmt.Sprintf("  🟢 Покупка: <i>%s</i>\n  🔴 Продажа: <i>%s</i>\n", format(ob.Bids), format(ob.Asks))
+	if len(ob.Asks) > 0 {
+		ask = ob.Asks[0].Price
+	}
+	return fmt.Sprintf("  <i>Bid %s / Ask %s</i>\n", bid, ask)
 }
 
 
