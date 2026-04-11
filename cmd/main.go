@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
@@ -23,7 +24,6 @@ import (
 	"github.com/osman/bot-traider/internal/shared/detector"
 	"github.com/osman/bot-traider/internal/shared/exchange"
 	"github.com/osman/bot-traider/internal/shared/logger"
-	"github.com/osman/bot-traider/internal/shared/redis"
 	"github.com/osman/bot-traider/internal/shared/stats"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
@@ -69,23 +69,16 @@ func main() {
 
 	tgNotifier, tgAgg := initTg(ctx, log)
 
-	// --- Redis ---
-	rdb, err := redisclient.New(ctx, redisclient.LoadConfig(), log.With(zap.String("component", "redis")))
-	if err != nil {
-		log.Fatal("redis connect failed", zap.Error(err))
-	}
-
 	// --- Order Book ---
-	obRepo := orderbook.NewRepository(rdb)
+	obStore := orderbook.NewStore()
 	obFetcher := orderbook.NewFetcher(
 		binanceRest,
 		sharedconfig.GetEnv("BINANCE_WS_URL", "wss://stream.binance.com:9443"),
-		obRepo,
 		log.With(zap.String("component", "orderbook")),
 	)
-	obSvc := orderbook.NewService(obFetcher, obRepo, log.With(zap.String("component", "orderbook")))
+	obSvc := orderbook.NewService(obFetcher, obStore, log.With(zap.String("component", "orderbook")))
 
-	go sendTopVolatile(ctx, log, binanceRest, tgNotifier, obSvc, obRepo)
+	go sendTopVolatile(ctx, log, binanceRest, tgNotifier, obSvc)
 
 	st := stats.New(ctx, log)
 
@@ -304,7 +297,7 @@ func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, ticke
 }
 
 
-func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestClient, tg *telegram.Notifier, obSvc *orderbook.Service, obRepo *orderbook.Repository) {
+func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestClient, tg *telegram.Notifier, obSvc *orderbook.Service) {
 	tickers, err := rest.GetTopVolatile(ctx, 10)
 	if err != nil {
 		log.Error("failed to get top volatile", zap.Error(err))
@@ -316,8 +309,16 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestCli
 		symbols[i] = t.Symbol
 	}
 
-	// Загружаем стаканы (REST-снимок → Redis, затем WS в фоне)
-	obSvc.Init(ctx, symbols, 20)
+	// Запускаем diff-стримы: REST-снимок 5000 уровней + WS дельты в фоне
+	obSvc.Init(ctx, symbols)
+
+	// Ждём инициализации стаканов (REST-запросы выполняются в фоне)
+	// Небольшая пауза чтобы первые снапшоты успели загрузиться
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(3 * time.Second):
+	}
 
 	newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
 
@@ -334,9 +335,9 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, rest *binance.RestCli
 		msg += fmt.Sprintf("%s <b>%s</b>  %s%.2f%%  <code>$%s</code>\n",
 			arrow, t.Symbol, sign, t.PriceChangePercent, formatPrice(t.LastPrice))
 
-		ob, obErr := obRepo.Get(ctx, t.Symbol)
-		if obErr != nil {
-			log.Warn("orderbook unavailable", zap.String("symbol", t.Symbol), zap.Error(obErr))
+		ob, ok := obSvc.GetBook(t.Symbol)
+		if !ok {
+			log.Warn("orderbook unavailable", zap.String("symbol", t.Symbol))
 		} else {
 			msg += formatOrderBook(ob)
 		}

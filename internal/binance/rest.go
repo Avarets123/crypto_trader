@@ -388,8 +388,9 @@ func (c *RestClient) CancelOrder(ctx context.Context, symbol, orderID string) er
 
 // DepthSnapshot — снимок стакана (bids/asks как пары [price, qty]).
 type DepthSnapshot struct {
-	Bids [][2]string
-	Asks [][2]string
+	LastUpdateID int64
+	Bids         [][2]string
+	Asks         [][2]string
 }
 
 // GetDepth возвращает снимок стакана через GET /api/v3/depth (публичный эндпоинт).
@@ -416,8 +417,9 @@ func (c *RestClient) GetDepth(ctx context.Context, symbol string, limit int) (*D
 	}
 
 	var raw struct {
-		Bids [][]json.RawMessage `json:"bids"`
-		Asks [][]json.RawMessage `json:"asks"`
+		LastUpdateID int64               `json:"lastUpdateId"`
+		Bids         [][]json.RawMessage `json:"bids"`
+		Asks         [][]json.RawMessage `json:"asks"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("binance get depth unmarshal: %w", err)
@@ -438,8 +440,9 @@ func (c *RestClient) GetDepth(ctx context.Context, symbol string, limit int) (*D
 	}
 
 	return &DepthSnapshot{
-		Bids: parsePairs(raw.Bids),
-		Asks: parsePairs(raw.Asks),
+		LastUpdateID: raw.LastUpdateID,
+		Bids:         parsePairs(raw.Bids),
+		Asks:         parsePairs(raw.Asks),
 	}, nil
 }
 

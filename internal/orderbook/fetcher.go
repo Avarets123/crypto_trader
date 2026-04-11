@@ -18,47 +18,41 @@ type DepthClient interface {
 	GetDepth(ctx context.Context, symbol string, limit int) (*binance.DepthSnapshot, error)
 }
 
-// Fetcher загружает стакан через REST и подписывается на WS-обновления.
+// Fetcher загружает стакан через REST и подписывается на WS diff-стрим.
 type Fetcher struct {
 	rest    DepthClient
 	wsBase  string
-	repo    *Repository
 	log     *zap.Logger
 	maxWait time.Duration
 }
 
 // NewFetcher создаёт Fetcher.
 // wsBase — базовый WS URL (напр. "wss://stream.binance.com:9443").
-func NewFetcher(rest DepthClient, wsBase string, repo *Repository, log *zap.Logger) *Fetcher {
+func NewFetcher(rest DepthClient, wsBase string, log *zap.Logger) *Fetcher {
 	return &Fetcher{
 		rest:    rest,
 		wsBase:  wsBase,
-		repo:    repo,
 		log:     log,
 		maxWait: 60 * time.Second,
 	}
 }
 
-// FetchSnapshot загружает снимок стакана через REST и сохраняет в Redis.
-func (f *Fetcher) FetchSnapshot(ctx context.Context, symbol string, depth int) (*OrderBook, error) {
-	snap, err := f.rest.GetDepth(ctx, symbol, depth)
-	if err != nil {
-		return nil, fmt.Errorf("fetch snapshot %s: %w", symbol, err)
-	}
-
-	ob := &OrderBook{
-		Symbol:    symbol,
-		Bids:      entriesToModel(snap.Bids),
-		Asks:      entriesToModel(snap.Asks),
-		UpdatedAt: time.Now(),
-	}
-	return ob, nil
+// diffMsg — инкрементальное обновление стакана из WS @depth стрима.
+type diffMsg struct {
+	FirstUpdateID int64               `json:"U"`
+	FinalUpdateID int64               `json:"u"`
+	Bids          [][]json.RawMessage `json:"b"`
+	Asks          [][]json.RawMessage `json:"a"`
 }
 
-// Subscribe открывает WS-стрим <symbol>@depth20 и при каждом сообщении обновляет Redis.
+// SubscribeDiff запускает полный diff-стрим для символа:
+// 1. Подключается к <symbol>@depth@100ms
+// 2. Буферизует события
+// 3. Загружает REST-снимок (5000 уровней) → инициализирует LocalBook
+// 4. Применяет буферизованные события для синхронизации
+// 5. Применяет последующие события в реальном времени
 // Reconnect с exponential backoff. Блокирует до ctx.Done().
-func (f *Fetcher) Subscribe(ctx context.Context, symbol string) {
-	wsURL := fmt.Sprintf("%s/ws/%s@depth20@300ms", f.wsBase, strings.ToLower(symbol))
+func (f *Fetcher) SubscribeDiff(ctx context.Context, symbol string, store *Store) {
 	wait := time.Second
 
 	for {
@@ -68,38 +62,15 @@ func (f *Fetcher) Subscribe(ctx context.Context, symbol string) {
 		default:
 		}
 
-		conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			f.log.Warn("orderbook ws: dial failed, reconnecting",
-				zap.String("symbol", symbol),
-				zap.Duration("wait", wait),
-				zap.Error(err),
-			)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(wait):
-			}
-			wait = nextWait(wait, f.maxWait)
-			continue
-		}
-
-		f.log.Info("orderbook ws: connected", zap.String("symbol", symbol))
-		wait = time.Second
-
-		f.readLoop(ctx, conn, symbol)
-		conn.Close()
-
+		err := f.runDiffStream(ctx, symbol, store)
 		if ctx.Err() != nil {
 			return
 		}
 
-		f.log.Warn("orderbook ws: disconnected, reconnecting",
+		f.log.Warn("orderbook diff: reconnecting",
 			zap.String("symbol", symbol),
 			zap.Duration("wait", wait),
+			zap.Error(err),
 		)
 		select {
 		case <-ctx.Done():
@@ -110,63 +81,97 @@ func (f *Fetcher) Subscribe(ctx context.Context, symbol string) {
 	}
 }
 
-// readLoop читает сообщения стрима depth20 и сохраняет обновлённый стакан в Redis.
-func (f *Fetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbol string) {
+// runDiffStream выполняет один цикл подключения diff-стрима.
+func (f *Fetcher) runDiffStream(ctx context.Context, symbol string, store *Store) error {
+	wsURL := fmt.Sprintf("%s/ws/%s@depth@100ms", f.wsBase, strings.ToLower(symbol))
+
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	defer conn.Close()
+
+	// Буфер на 1000 событий — достаточно для времени REST-запроса
+	buf := make(chan diffMsg, 1000)
+	readErr := make(chan error, 1)
+
+	// Горутина чтения WS-сообщений
+	go func() {
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				readErr <- err
+				return
+			}
+			var d diffMsg
+			if json.Unmarshal(msg, &d) == nil && d.FinalUpdateID > 0 {
+				select {
+				case buf <- d:
+				default:
+					readErr <- fmt.Errorf("event buffer overflow")
+					return
+				}
+			}
+		}
+	}()
+
+	// Загружаем полный REST-снимок (5000 уровней)
+	snap, err := f.rest.GetDepth(ctx, symbol, 5000)
+	if err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+
+	// Инициализируем локальный стакан
+	book := store.GetOrCreate(symbol)
+	book.Init(snap.Bids, snap.Asks, snap.LastUpdateID)
+
+	f.log.Info("orderbook: initialized from snapshot",
+		zap.String("symbol", symbol),
+		zap.Int64("lastUpdateID", snap.LastUpdateID),
+		zap.Int("bids", len(snap.Bids)),
+		zap.Int("asks", len(snap.Asks)),
+	)
+
+	// Применяем буферизованные события (синхронизация)
+	synced := false
+draining:
 	for {
-		if ctx.Err() != nil {
-			return
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-readErr:
+			return err
+		case d := <-buf:
+			if d.FinalUpdateID <= snap.LastUpdateID {
+				continue // устаревшее событие
+			}
+			if !synced {
+				// Первое валидное событие должно перекрывать lastUpdateID+1
+				if d.FirstUpdateID > snap.LastUpdateID+1 {
+					return fmt.Errorf("sync gap: U=%d > lastUpdateId+1=%d, restarting",
+						d.FirstUpdateID, snap.LastUpdateID+1)
+				}
+				synced = true
+			}
+			book.Apply(d.FinalUpdateID, d.Bids, d.Asks)
+		default:
+			break draining
 		}
-
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			f.log.Debug("orderbook ws: read error", zap.String("symbol", symbol), zap.Error(err))
-			return
-		}
-
-		var raw struct {
-			Bids [][]json.RawMessage `json:"bids"`
-			Asks [][]json.RawMessage `json:"asks"`
-		}
-		if err := json.Unmarshal(msg, &raw); err != nil {
-			f.log.Warn("orderbook ws: unmarshal failed", zap.String("symbol", symbol), zap.Error(err))
-			continue
-		}
-
-		ob := OrderBook{
-			Symbol:    symbol,
-			Bids:      parsePairs(raw.Bids),
-			Asks:      parsePairs(raw.Asks),
-			UpdatedAt: time.Now(),
-		}
-
-		if err := f.repo.Save(ctx, ob); err != nil {
-			f.log.Warn("orderbook ws: save failed", zap.String("symbol", symbol), zap.Error(err))
-			continue
-		}
-
 	}
-}
 
-func entriesToModel(pairs [][2]string) []Entry {
-	entries := make([]Entry, len(pairs))
-	for i, p := range pairs {
-		entries[i] = Entry{Price: p[0], Qty: p[1]}
-	}
-	return entries
-}
+	f.log.Info("orderbook: synced, streaming diffs", zap.String("symbol", symbol))
 
-func parsePairs(rows [][]json.RawMessage) []Entry {
-	entries := make([]Entry, 0, len(rows))
-	for _, row := range rows {
-		if len(row) < 2 {
-			continue
+	// Основной цикл — применяем события в реальном времени
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-readErr:
+			return err
+		case d := <-buf:
+			book.Apply(d.FinalUpdateID, d.Bids, d.Asks)
 		}
-		var price, qty string
-		json.Unmarshal(row[0], &price) //nolint:errcheck
-		json.Unmarshal(row[1], &qty)   //nolint:errcheck
-		entries = append(entries, Entry{Price: price, Qty: qty})
 	}
-	return entries
 }
 
 func nextWait(current, max time.Duration) time.Duration {
