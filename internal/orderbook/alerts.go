@@ -115,6 +115,9 @@ func (s *AlertService) OnSymbolsChanged(ctx context.Context, added, removed []st
 		for _, sym := range removed {
 			delete(s.baselines, sym)
 			delete(s.currents, sym)
+			if s.tradeAgg != nil {
+				s.tradeAgg.Reset(sym)
+			}
 		}
 	}
 
@@ -226,7 +229,7 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 
 		var trades exchange_orders.TradeStats
 		if s.tradeAgg != nil {
-			trades = s.tradeAgg.Flush(sym)
+			trades = s.tradeAgg.Get(sym)
 		}
 
 		entries = append(entries, volumeAlertEntry{

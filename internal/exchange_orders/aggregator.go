@@ -59,3 +59,21 @@ func (a *TradeAggregator) Flush(symbol string) TradeStats {
 	delete(a.stats, symbol)
 	return result
 }
+
+// Get возвращает накопленную статистику по символу без сброса.
+func (a *TradeAggregator) Get(symbol string) TradeStats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s, ok := a.stats[symbol]
+	if !ok {
+		return TradeStats{}
+	}
+	return *s
+}
+
+// Reset сбрасывает накопленную статистику по символу.
+func (a *TradeAggregator) Reset(symbol string) {
+	a.mu.Lock()
+	delete(a.stats, symbol)
+	a.mu.Unlock()
+}
