@@ -127,15 +127,27 @@ func main() {
 		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
 	}
 
-	// Подписываемся на изменения топ-листа: обновляем стаканы и подписки exchange_orders.
+	// Объявляем переменные клиентов заранее — хук захватит их по ссылке.
+	// Сами клиенты создаются позже, после инициализации tickerService.
+	var binanceTickerClient *binance.Client
+	var bybitTickerClient *bybit.Client
+
+	// Подписываемся на изменения топ-листа: обновляем стаканы, подписки exchange_orders и тикеры.
 	// Хук регистрируется после создания всех зависимых сервисов.
 	topProvider.WithOnSymbolsChanged(func(added, removed []string) {
+		all := topProvider.Symbols()
 		obSvc.OnSymbolsChanged(added, removed)
 		if eoSvc != nil {
 			eoSvc.OnSymbolsChanged(added, removed)
 		}
 		if alertSvc != nil {
 			alertSvc.OnSymbolsChanged(ctx, added, removed)
+		}
+		if binanceTickerClient != nil {
+			binanceTickerClient.NotifySymbolsChanged(all)
+		}
+		if bybitTickerClient != nil {
+			bybitTickerClient.NotifySymbolsChanged(all)
 		}
 	})
 	// Запускаем фоновое обновление топ-листа с интервалом ORDERBOOK_REFRESH_INTERVAL_MIN.
@@ -306,23 +318,20 @@ func main() {
 	tickerService.WithOnSend(volDetector.OnTicker)
 
 
-	watchExchanges(ctx, log, st, tickerService, topProvider)
-}
-
-func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, tickerService *ticker.TickerService, provider *binance.TopVolatileProvider) {
-	// Оба клиента подписываются только на топ-10 волатильных монет.
-	// Список берётся из провайдера (кэш, без REST); при изменении соединения пересоздаются.
-	topVolatileFetcher := provider.FetchSymbols
+	// --- Запуск бирж ---
+	// Клиенты создаются здесь, после tickerService, и назначаются в переменные объявленные выше.
+	// Это позволяет хуку topProvider.OnSymbolsChanged вызывать NotifySymbolsChanged на них.
+	topVolatileFetcher := topProvider.FetchSymbols
 
 	bybitCfg := bybit.LoadConfig()
 	log.Info("bybit config loaded", zap.Bool("enabled", bybitCfg.Enabled))
 	if bybitCfg.Enabled {
 		log.Info("starting bybit")
-		bybitClient := bybit.NewClient(bybitCfg, log.With(zap.String("market", "bybit")), st, tickerService)
-		bybitClient.WithSymbolFetcher(topVolatileFetcher)
+		bybitTickerClient = bybit.NewClient(bybitCfg, log.With(zap.String("market", "bybit")), st, tickerService)
+		bybitTickerClient.WithSymbolFetcher(topVolatileFetcher)
 		go func() {
 			log.Info("bybit goroutine started")
-			if err := bybitClient.Run(ctx); err != nil {
+			if err := bybitTickerClient.Run(ctx); err != nil {
 				log.Error("bybit client stopped", zap.Error(err))
 			}
 		}()
@@ -341,9 +350,9 @@ func watchExchanges(ctx context.Context, log *zap.Logger, st *stats.Stats, ticke
 		return
 	}
 	log.Info("starting binance")
-	binanceClient := binance.NewClient(binanceCfg, log.With(zap.String("market", "binance")), st, tickerService)
-	binanceClient.WithSymbolFetcher(topVolatileFetcher)
-	if err := binanceClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	binanceTickerClient = binance.NewClient(binanceCfg, log.With(zap.String("market", "binance")), st, tickerService)
+	binanceTickerClient.WithSymbolFetcher(topVolatileFetcher)
+	if err := binanceTickerClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("binance client stopped", zap.Error(err))
 	}
 }

@@ -101,6 +101,12 @@ func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.W
 	return cancel, wg
 }
 
+// NotifySymbolsChanged немедленно перезапускает WS-соединения для нового списка символов.
+// Вызывается при обновлении топ-листа, минуя таймер SymbolWatcher.
+func (c *Client) NotifySymbolsChanged(all []string) {
+	c.onSymbolsChanged(nil, nil, all)
+}
+
 // OnTicker реализует EventHandler.
 func (c *Client) OnTicker(t ticker.Ticker) {
 	if c.svc != nil {

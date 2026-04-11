@@ -102,6 +102,12 @@ func (c *Client) startConnections(symbols []string) (context.CancelFunc, *sync.W
 	return cancel, wg
 }
 
+// NotifySymbolsChanged немедленно перезапускает WS-соединения для нового списка символов.
+// Вызывается при обновлении топ-листа, минуя таймер SymbolWatcher.
+func (c *Client) NotifySymbolsChanged(all []string) {
+	c.onSymbolsChanged(nil, nil, all)
+}
+
 // OnTrade реализует EventHandler — логирует совершённую сделку.
 func (c *Client) OnTrade(event TradeEvent) {
 	side := "BUY"
