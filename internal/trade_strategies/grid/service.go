@@ -31,7 +31,7 @@ type Service struct {
 }
 
 // NewService создаёт Service.
-func NewService(cfg Config, client exchange.RestClient, log *zap.Logger, notifier *telegram.Notifier, tradesThreadID int) *Service {
+func NewService(cfg Config, symbols []string, client exchange.RestClient, log *zap.Logger, notifier *telegram.Notifier, tradesThreadID int) *Service {
 	if cfg.Grids < 5 || cfg.Grids > 50 {
 		log.Warn("grid: invalid GRID_GRIDS value, using default 20",
 			zap.Int("grids", cfg.Grids),
@@ -41,7 +41,7 @@ func NewService(cfg Config, client exchange.RestClient, log *zap.Logger, notifie
 
 	log.Info("grid strategy initialized",
 		zap.String("exchange", cfg.Exchange),
-		zap.Strings("symbols", cfg.Symbols),
+		zap.Strings("symbols", symbols),
 		zap.Int("grids", cfg.Grids),
 		zap.Float64("total_usdt", cfg.TotalUSDT),
 		zap.Float64("lower_bound_pct", cfg.LowerBoundPct),
@@ -68,7 +68,7 @@ func (s *Service) WithRepository(repo *GridRepository) {
 
 // Start проверяет баланс и инициализирует placeholders для символов.
 // Вызывается в горутине из main.go.
-func (s *Service) Start(ctx context.Context) {
+func (s *Service) Start(ctx context.Context, symbols []string) {
 	s.mu.Lock()
 	s.ctx = ctx
 	s.mu.Unlock()
@@ -93,7 +93,7 @@ func (s *Service) Start(ctx context.Context) {
 	)
 
 	// Инициализируем placeholders для каждого символа
-	for _, sym := range s.cfg.Symbols {
+	for _, sym := range symbols {
 		state := &GridState{
 			Symbol:  sym,
 			Active:  false,

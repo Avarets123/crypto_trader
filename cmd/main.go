@@ -292,9 +292,9 @@ func main() {
 			log.Fatal("grid: unknown exchange in GRID_EXCHANGE",
 				zap.String("exchange", gridCfg.Exchange))
 		}
-		gridSvc := grid.NewService(gridCfg, gridClient, log.With(zap.String("component", "grid")), tgNotifier, tradesThreadID)
+		gridSvc := grid.NewService(gridCfg, topProvider.Symbols(), gridClient, log.With(zap.String("component", "grid")), tgNotifier, tradesThreadID)
 		gridSvc.WithRepository(grid.NewGridRepository(pool))
-		gridSvc.Start(ctx)
+		gridSvc.Start(ctx, topProvider.Symbols())
 		tickerService.WithOnSend(gridSvc.OnTicker)
 		log.Info("grid strategy enabled", zap.Strings("symbols", gridCfg.Symbols))
 	} else {
