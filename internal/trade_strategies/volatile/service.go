@@ -18,11 +18,16 @@ import (
 // obiDepth — количество уровней стакана для расчёта OBI.
 const obiDepth = 50
 
+// baselineRefreshSec — интервал обновления baseline (сек).
+// После этого времени baseline перезаписывается текущим снимком.
+const baselineRefreshSec = 300
+
 // snapshot — снимок стакана в момент подписки на символ (baseline).
 type snapshot struct {
-	bidVol float64
-	askVol float64
-	obi    float64
+	bidVol    float64
+	askVol    float64
+	obi       float64
+	takenAt   time.Time
 }
 
 // Service реализует Volatile стратегию:
@@ -170,11 +175,12 @@ func (s *Service) checkSignals() {
 		}
 
 		obi := orderbook.CalcOBI(bidVol, askVol)
-		curr := snapshot{bidVol: bidVol, askVol: askVol, obi: obi}
+		now := time.Now()
+		curr := snapshot{bidVol: bidVol, askVol: askVol, obi: obi, takenAt: now}
 
 		s.mu.Lock()
 		base, hasBase := s.baselines[sym]
-		if !hasBase {
+		if !hasBase || now.Sub(base.takenAt) >= baselineRefreshSec*time.Second {
 			s.baselines[sym] = curr
 			s.mu.Unlock()
 			continue
@@ -406,6 +412,8 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 		zap.Int("max_hold_sec", s.cfg.MaxHoldSec),
 	)
 
+	lastPrice := t.EntryPrice
+
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -415,20 +423,23 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 			s.log.Warn("volatile: timeout, force closing",
 				zap.Int64("id", t.ID),
 				zap.String("symbol", t.Symbol),
+				zap.Float64("last_price", lastPrice),
 				zap.Int("hold_sec", int(time.Since(t.OpenedAt).Seconds())),
 			)
-			s.closeTrade(t, t.PeakPrice, "timeout")
+			s.closeTrade(t, lastPrice, "timeout")
 			return
 
 		case <-t.CrashCh:
 			s.log.Warn("volatile: crash exit triggered",
 				zap.Int64("id", t.ID),
 				zap.String("symbol", t.Symbol),
+				zap.Float64("last_price", lastPrice),
 			)
-			s.closeTrade(t, t.PeakPrice, "crash")
+			s.closeTrade(t, lastPrice, "crash")
 			return
 
 		case price := <-t.PriceCh:
+			lastPrice = price
 			if price > t.PeakPrice {
 				t.PeakPrice = price
 				trailingStop = t.PeakPrice * (1 - s.cfg.TrailingStopPct/100)
