@@ -271,3 +271,14 @@ func (m *Service) CountOpenPositions() int {
 	defer m.mu.RUnlock()
 	return len(m.trades)
 }
+
+// GetOpenTrades возвращает копии всех открытых позиций.
+func (m *Service) GetOpenTrades() []Trade {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]Trade, 0, len(m.trades))
+	for _, t := range m.trades {
+		result = append(result, *t)
+	}
+	return result
+}

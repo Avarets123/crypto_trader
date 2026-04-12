@@ -225,6 +225,13 @@ func main() {
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
 	tradeSvc.WithOnTradeCloseError(tradeNotif.OnTradeCloseError)
 
+	// --- Position Monitor ---
+	posMonitorInterval := sharedconfig.GetEnvInt("POSITION_MONITOR_INTERVAL_SEC", 60)
+	posMonitor := newPositionMonitor(tradeSvc, tgNotifier, tradesThreadID, posMonitorInterval, log.With(zap.String("component", "position-monitor")))
+	tickerService.WithOnSend(posMonitor.OnTicker)
+	go posMonitor.Start(ctx)
+	log.Info("position monitor started", zap.Int("interval_sec", posMonitorInterval))
+
 	// --- Lead-Lag Arb Executor ---
 	arbCfg := arbitration.LoadConfig()
 	if arbCfg.Enabled {
