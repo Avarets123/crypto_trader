@@ -135,11 +135,24 @@ func main() {
 	var binanceTickerClient *binance.Client
 	var bybitTickerClient *bybit.Client
 	var volatileSvc *volatile.Service
+	var tradeSvc *trade.Service
+
+	// notifyExchanges отправляет обновлённый список символов биржевым клиентам.
+	// К топ-15 добираются символы с открытыми позициями — чтобы не потерять тикеры
+	// по валютам, которые выпали из топа пока по ним есть активная сделка.
+	notifyExchanges := func() {
+		all := mergeSymbols(topProvider.Symbols(), openTradeSymbols(tradeSvc))
+		if binanceTickerClient != nil {
+			binanceTickerClient.NotifySymbolsChanged(all)
+		}
+		if bybitTickerClient != nil {
+			bybitTickerClient.NotifySymbolsChanged(all)
+		}
+	}
 
 	// Подписываемся на изменения топ-листа: обновляем стаканы, подписки exchange_orders и тикеры.
 	// Хук регистрируется после создания всех зависимых сервисов.
 	topProvider.WithOnSymbolsChanged(func(added, removed []string) {
-		all := topProvider.Symbols()
 		obSvc.OnSymbolsChanged(added, removed)
 		if eoSvc != nil {
 			eoSvc.OnSymbolsChanged(added, removed)
@@ -150,12 +163,7 @@ func main() {
 		if volatileSvc != nil {
 			volatileSvc.OnSymbolsChanged(added, removed)
 		}
-		if binanceTickerClient != nil {
-			binanceTickerClient.NotifySymbolsChanged(all)
-		}
-		if bybitTickerClient != nil {
-			bybitTickerClient.NotifySymbolsChanged(all)
-		}
+		notifyExchanges()
 	})
 	// Запускаем фоновое обновление топ-листа с интервалом ORDERBOOK_REFRESH_INTERVAL_MIN.
 	go topProvider.Run(ctx, time.Duration(alertCfg.RefreshIntervalMin)*time.Minute)
@@ -213,7 +221,7 @@ func main() {
 		log.Warn("bybit api key not set, bybit trading disabled")
 	}
 
-	tradeSvc := trade.NewService(
+	tradeSvc = trade.NewService(
 		cfg.DevMode,
 		tradeRepo,
 		restClients,
@@ -240,6 +248,9 @@ func main() {
 	tradeSvc.WithOnTradeOpen(tradeNotif.OnTradeOpen)
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
 	tradeSvc.WithOnTradeCloseError(tradeNotif.OnTradeCloseError)
+	// При закрытии позиции сразу обновляем стримы: если символ выпал из топа
+	// пока сделка была открыта — он отпишется немедленно, не ждя следующего обновления топа.
+	tradeSvc.WithOnTradeClose(func(_ *trade.Trade) { notifyExchanges() })
 
 	// --- Position Monitor ---
 	posMonitorInterval := sharedconfig.GetEnvInt("POSITION_MONITOR_INTERVAL_SEC", 60)
