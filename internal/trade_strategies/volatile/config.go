@@ -9,6 +9,7 @@ type Config struct {
 	BullScoreMin     float64 // VOLATILE_BULL_SCORE_MIN=0.45; минимальный BullScore для входа
 	CheckIntervalSec int     // VOLATILE_CHECK_INTERVAL_SEC=5; интервал проверки сигнала (сек)
 	TradeWindowSec   int     // VOLATILE_TRADE_WINDOW_SEC=300; окно статистики сделок (сек)
+	WarmupSec        int     // VOLATILE_WARMUP_SEC=120; период прогрева при старте (сек)
 	TrailingStopPct  float64 // VOLATILE_TRAILING_STOP_PCT=1.0
 	TakeProfitPct    float64 // VOLATILE_TAKE_PROFIT_PCT=2.5
 	StopLossPct      float64 // VOLATILE_STOP_LOSS_PCT=1.5
@@ -26,6 +27,7 @@ func LoadConfig() Config {
 		BullScoreMin:     sharedconfig.GetEnvFloat("VOLATILE_BULL_SCORE_MIN", 0.45),
 		CheckIntervalSec: sharedconfig.GetEnvInt("VOLATILE_CHECK_INTERVAL_SEC", 5),
 		TradeWindowSec:   sharedconfig.GetEnvInt("VOLATILE_TRADE_WINDOW_SEC", 300),
+		WarmupSec:        sharedconfig.GetEnvInt("VOLATILE_WARMUP_SEC", 120),
 		TrailingStopPct:  sharedconfig.GetEnvFloat("VOLATILE_TRAILING_STOP_PCT", 1.0),
 		TakeProfitPct:    sharedconfig.GetEnvFloat("VOLATILE_TAKE_PROFIT_PCT", 2.5),
 		StopLossPct:      sharedconfig.GetEnvFloat("VOLATILE_STOP_LOSS_PCT", 1.5),

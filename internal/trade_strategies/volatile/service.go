@@ -29,17 +29,18 @@ type snapshot struct {
 // вход по BullScore рассчитанному из стакана, выход по crash/trailing stop/TP/timeout.
 // Имеет собственный цикл проверки независимый от AlertService.
 type Service struct {
-	mu        sync.Mutex
-	cfg       Config
-	ctx       context.Context
-	tradeSvc  *trade.Service
-	bookSvc   *orderbook.Service
-	tradeAgg  *exchange_orders.TradeAggregator
-	tracker   *TradeTracker
-	cooldowns map[string]time.Time
-	symbols   []string
-	baselines map[string]snapshot
-	log       *zap.Logger
+	mu          sync.Mutex
+	cfg         Config
+	ctx         context.Context
+	tradeSvc    *trade.Service
+	bookSvc     *orderbook.Service
+	tradeAgg    *exchange_orders.TradeAggregator
+	tracker     *TradeTracker
+	cooldowns   map[string]time.Time
+	symbols     []string
+	baselines   map[string]snapshot
+	warmupUntil time.Time
+	log         *zap.Logger
 }
 
 // New создаёт Service.
@@ -108,6 +109,13 @@ func (s *Service) OnSymbolsChanged(added, removed []string) {
 
 // Start запускает собственный цикл проверки сигналов. Блокирует до ctx.Done().
 func (s *Service) Start(ctx context.Context) {
+	warmup := time.Duration(s.cfg.WarmupSec) * time.Second
+	s.warmupUntil = time.Now().Add(warmup)
+	s.log.Info("volatile: warmup period started",
+		zap.Duration("duration", warmup),
+		zap.Time("ready_at", s.warmupUntil),
+	)
+
 	checkTicker := time.NewTicker(time.Duration(s.cfg.CheckIntervalSec) * time.Second)
 	defer checkTicker.Stop()
 
@@ -217,6 +225,14 @@ func (s *Service) checkSignals() {
 		)
 
 		if bullScore >= s.cfg.BullScoreMin {
+			if time.Now().Before(s.warmupUntil) {
+				s.log.Debug("volatile: warmup in progress, skipping entry",
+					zap.String("symbol", sym),
+					zap.Float64("bull_score", bullScore),
+					zap.Duration("remaining", time.Until(s.warmupUntil)),
+				)
+				continue
+			}
 			s.tryEnter(sym, mid, bullScore)
 		}
 	}
