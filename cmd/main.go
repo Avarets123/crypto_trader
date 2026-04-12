@@ -26,6 +26,7 @@ import (
 	"github.com/osman/bot-traider/internal/shared/detector"
 	"github.com/osman/bot-traider/internal/shared/exchange"
 	"github.com/osman/bot-traider/internal/shared/logger"
+	redisclient "github.com/osman/bot-traider/internal/shared/redis"
 	"github.com/osman/bot-traider/internal/shared/stats"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
@@ -219,7 +220,22 @@ func main() {
 		log.With(zap.String("component", "order-manager")),
 	)
 
+	// --- Redis + персистентность открытых позиций ---
+	redisCfg := redisclient.LoadConfig()
+	rdb, err := redisclient.New(ctx, redisCfg, log.With(zap.String("component", "redis")))
+	if err != nil {
+		log.Fatal("redis connect failed", zap.Error(err))
+	}
+	tradeRedisRepo := trade.NewTradeRedisRepository(rdb, log.With(zap.String("component", "trade-redis")))
+	tradeSvc.WithRedisRepo(tradeRedisRepo)
+
+	// Восстанавливаем и закрываем все позиции, оставшиеся с предыдущего запуска
 	tradesThreadID := sharedconfig.GetEnvInt("TELEGRAM_TRADES_THREAD_ID", 0)
+	recoveredTrades := recoverTrades(ctx, tradeRedisRepo, restClients, tradeRepo, log.With(zap.String("component", "recover-trades")))
+	if len(recoveredTrades) > 0 {
+		log.Warn("recovered and closed positions from previous run", zap.Int("count", len(recoveredTrades)))
+		sendRecoveryNotification(ctx, tgNotifier, tradesThreadID, recoveredTrades)
+	}
 	tradeNotif := newTradeNotifier(ctx, tgNotifier, log.With(zap.String("component", "trade-notifier")), tradesThreadID)
 	tradeSvc.WithOnTradeOpen(tradeNotif.OnTradeOpen)
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)

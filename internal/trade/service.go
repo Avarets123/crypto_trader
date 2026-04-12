@@ -13,7 +13,7 @@ import (
 )
 
 // service управляет позициями.
-// Открытые позиции хранятся в памяти.
+// Открытые позиции хранятся в памяти и дублируются в Redis.
 // В БД пишется только при закрытии (единственный INSERT с полными данными).
 type Service struct {
 	mu           sync.RWMutex
@@ -23,10 +23,16 @@ type Service struct {
 	trades       map[int64]*Trade
 	clients      map[string]exchange.RestClient
 	repo         *TradeRepository
+	redisRepo    *TradeRedisRepository
 	log          *zap.Logger
 	onTradeOpen       []func(*Trade)
 	onTradeClose      []func(*Trade)
 	onTradeCloseError []func(*Trade, error)
+}
+
+// WithRedisRepo подключает Redis-репозиторий для персистентности открытых позиций.
+func (m *Service) WithRedisRepo(repo *TradeRedisRepository) {
+	m.redisRepo = repo
 }
 
 // WithOnTradeOpen регистрирует хук, вызываемый при открытии сделки.
@@ -129,6 +135,12 @@ func (m *Service) OpenTrade(ctx context.Context, newTrade Trade) (int64, error) 
 	m.mu.Lock()
 	m.trades[id] = pos
 	m.mu.Unlock()
+
+	if m.redisRepo != nil {
+		if err := m.redisRepo.Save(ctx, pos); err != nil {
+			m.log.Warn("trade redis: failed to save open trade", zap.Int64("id", id), zap.Error(err))
+		}
+	}
 
 	m.log.Info("trade created: ",
 		zap.Int64("id", id),
@@ -235,6 +247,12 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 	m.mu.Lock()
 	delete(m.trades, id)
 	m.mu.Unlock()
+
+	if m.redisRepo != nil {
+		if err := m.redisRepo.Delete(ctx, id); err != nil {
+			m.log.Warn("trade redis: failed to delete closed trade", zap.Int64("id", id), zap.Error(err))
+		}
+	}
 
 	m.log.Info("trade ended",
 		zap.Int64("id", id),
