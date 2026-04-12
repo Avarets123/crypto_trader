@@ -130,8 +130,6 @@ func strategyEmoji(strategy string) string {
 		return "⚡"
 	case "momentum", "pump":
 		return "🚀"
-	case "scalping":
-		return "✂️"
 	case "volatile":
 		return "🌊"
 	default:

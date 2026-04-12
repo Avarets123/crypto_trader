@@ -32,7 +32,6 @@ import (
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/momentum"
-	"github.com/osman/bot-traider/internal/trade_strategies/scalping"
 	"github.com/osman/bot-traider/internal/trade_strategies/volatile"
 )
 
@@ -283,24 +282,6 @@ func main() {
 		)
 	} else {
 		log.Info("momentum strategy disabled (MOMENTUM_ENABLED=false)")
-	}
-
-	// --- Scalping стратегия ---
-	scalpCfg := scalping.LoadConfig()
-	if scalpCfg.Enabled {
-		scalpClient, ok := restClients[scalpCfg.Exchange]
-		if !ok {
-			log.Fatal("scalping: unknown exchange in SCALPING_EXCHANGE",
-				zap.String("exchange", scalpCfg.Exchange))
-		}
-		scalpSvc := scalping.New(ctx, scalpCfg, tradeSvc, scalpClient, log.With(zap.String("component", "scalping")))
-		tickerService.WithOnSend(scalpSvc.OnTicker)
-		if err := scalpSvc.Start(ctx); err != nil {
-			log.Fatal("scalping start failed", zap.Error(err))
-		}
-		log.Info("scalping strategy enabled", zap.Strings("symbols", scalpCfg.Symbols))
-	} else {
-		log.Info("scalping strategy disabled (SCALPING_ENABLED=false)")
 	}
 
 	// --- Grid стратегия ---
