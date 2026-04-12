@@ -5,7 +5,7 @@ import sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 // Config хранит параметры Volatile стратегии.
 type Config struct {
 	Enabled          bool    // VOLATILE_ENABLED=false
-	Exchange         string  // VOLATILE_EXCHANGE=bybit; биржа где размещаются ордера
+	Exchange         string  // VOLATILE_EXCHANGE=binance; биржа где размещаются ордера
 	BullScoreMin     float64 // VOLATILE_BULL_SCORE_MIN=0.45; минимальный BullScore для входа
 	CheckIntervalSec int     // VOLATILE_CHECK_INTERVAL_SEC=5; интервал проверки сигнала (сек)
 	TradeWindowSec   int     // VOLATILE_TRADE_WINDOW_SEC=300; окно статистики сделок (сек)

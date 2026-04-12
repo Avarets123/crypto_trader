@@ -15,7 +15,6 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/osman/bot-traider/internal/binance"
-	"github.com/osman/bot-traider/internal/bybit"
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/news"
 	"github.com/osman/bot-traider/internal/ollama"
@@ -31,7 +30,6 @@ import (
 	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
 	"github.com/osman/bot-traider/internal/trade"
-	"github.com/osman/bot-traider/internal/trade_strategies/arbitration"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/momentum"
 	"github.com/osman/bot-traider/internal/trade_strategies/scalping"
@@ -64,10 +62,7 @@ func main() {
 		cancel()
 	}()
 
-	binanceRest := binance.NewRestClient(ctx,log.With(zap.String("component", "binance-rest")))
-	bybitRest := bybit.NewRestClient(ctx,log.With(zap.String("component", "bybit-rest")))
-
-
+	binanceRest := binance.NewRestClient(ctx, log.With(zap.String("component", "binance-rest")))
 
 	tgNotifier, tgAgg := initTg(ctx, log)
 
@@ -133,7 +128,6 @@ func main() {
 	// Объявляем переменные заранее — хук захватит их по ссылке.
 	// Сами сервисы создаются позже, после инициализации tickerService.
 	var binanceTickerClient *binance.Client
-	var bybitTickerClient *bybit.Client
 	var volatileSvc *volatile.Service
 	var tradeSvc *trade.Service
 
@@ -144,9 +138,6 @@ func main() {
 		all := mergeSymbols(topProvider.Symbols(), openTradeSymbols(tradeSvc))
 		if binanceTickerClient != nil {
 			binanceTickerClient.NotifySymbolsChanged(all)
-		}
-		if bybitTickerClient != nil {
-			bybitTickerClient.NotifySymbolsChanged(all)
 		}
 	}
 
@@ -215,11 +206,6 @@ func main() {
 	restClients := map[string]exchange.RestClient{
 		"binance": binanceRest,
 	}
-	if sharedconfig.GetEnv("BYBIT_API_KEY", "") != "" {
-		restClients["bybit"] = bybitRest
-	} else {
-		log.Warn("bybit api key not set, bybit trading disabled")
-	}
 
 	tradeSvc = trade.NewService(
 		cfg.DevMode,
@@ -259,27 +245,13 @@ func main() {
 	go posMonitor.Start(ctx)
 	log.Info("position monitor started", zap.Int("interval_sec", posMonitorInterval))
 
-	// --- Lead-Lag Arb Executor ---
-	arbCfg := arbitration.LoadConfig()
-	if arbCfg.Enabled {
-		arbSvc := arbitration.New(ctx, arbCfg, tradeSvc, log.With(zap.String("component", "arb-executor")))
-		cmp.WithOnSpreadOpenEvent(arbSvc.OnSpreadOpen)
-		cmp.WithOnSpreadCloseEvent(arbSvc.OnSpreadClose)
-		tickerService.WithOnSend(arbSvc.OnTicker)
-		log.Info("arbitration strategy enabled",
-			zap.Float64("min_spread_pct", arbCfg.MinSpreadPct),
-		)
-	} else {
-		log.Info("arbitration strategy disabled (ARB_ENABLED=false)")
-	}
-
 	cmp.WithOnSpreadOpenEvent(func(_ *comparator.SpreadEvent) { st.RecordSpread() })
 	cmp.WithOnSpreadOpenEvent(tgAgg.OnSpreadOpenEvent)
 	tickerService.WithOnSend(det.Update)
 	tickerService.WithOnSend(cmp.Update)
 
 
-	// --- Volatile стратегия (со��ственный цикл, прямой доступ к стакану) ---
+	// --- Volatile стратегия (собственный цикл, прямой доступ к стакану) ---
 	volatileCfg := volatile.LoadConfig()
 	if volatileCfg.Enabled {
 		volatileSvc = volatile.New(ctx, volatileCfg, tradeSvc, obSvc, log.With(zap.String("component", "volatile")))
@@ -312,8 +284,6 @@ func main() {
 	} else {
 		log.Info("momentum strategy disabled (MOMENTUM_ENABLED=false)")
 	}
-
-
 
 	// --- Scalping стратегия ---
 	scalpCfg := scalping.LoadConfig()
@@ -387,29 +357,10 @@ func main() {
 	// Это позволяет хуку topProvider.OnSymbolsChanged вызывать NotifySymbolsChanged на них.
 	topVolatileFetcher := topProvider.FetchSymbols
 
-	bybitCfg := bybit.LoadConfig()
-	log.Info("bybit config loaded", zap.Bool("enabled", bybitCfg.Enabled))
-	if bybitCfg.Enabled {
-		log.Info("starting bybit")
-		bybitTickerClient = bybit.NewClient(bybitCfg, log.With(zap.String("market", "bybit")), st, tickerService)
-		bybitTickerClient.WithSymbolFetcher(topVolatileFetcher)
-		go func() {
-			log.Info("bybit goroutine started")
-			if err := bybitTickerClient.Run(ctx); err != nil {
-				log.Error("bybit client stopped", zap.Error(err))
-			}
-		}()
-	} else {
-		log.Info("bybit disabled, skipping")
-	}
-
 	binanceCfg := binance.LoadConfig()
 	log.Info("binance config loaded", zap.Bool("enabled", binanceCfg.Enabled))
 	if !binanceCfg.Enabled {
-		log.Info("binance disabled, skipping")
-		if !bybitCfg.Enabled {
-			log.Warn("no exchanges enabled, bot will do nothing")
-		}
+		log.Warn("binance disabled, bot will do nothing")
 		<-ctx.Done()
 		return
 	}

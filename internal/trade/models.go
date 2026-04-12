@@ -8,7 +8,7 @@ type Trade struct {
 	Strategy       string   // 'arb', 'pump'
 	Mode           string   // 'test' | 'prod'
 	SignalExchange string   // биржа-источник сигнала ('binance')
-	TradeExchange  string   // биржа исполнения ('bybit')
+	TradeExchange  string   // биржа исполнения ('binance')
 	Symbol         string
 	Qty            float64
 	EntryPrice     float64

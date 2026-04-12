@@ -32,7 +32,6 @@ func New(ctx context.Context, log *zap.Logger) *Stats {
 		startedAt: time.Now(),
 		exchanges: map[string]*ExchangeStats{
 			"binance": {},
-			"bybit":   {},
 		},
 	}
 

@@ -2,7 +2,7 @@ package grid
 
 import "math"
 
-// RoundPrice округляет цену до точности, приемлемой для большинства USDT-пар на Binance/Bybit.
+// RoundPrice округляет цену до точности, приемлемой для большинства USDT-пар на Binance.
 // Binance использует tickSize=0.01 для большинства пар >= 1 USDT (BTC, ETH, SOL, BNB, AVAX и др.).
 func RoundPrice(price float64) float64 {
 	switch {
