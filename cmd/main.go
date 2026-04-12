@@ -16,6 +16,7 @@ import (
 
 	"github.com/osman/bot-traider/internal/binance"
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
+	"github.com/osman/bot-traider/internal/kucoin"
 	"github.com/osman/bot-traider/internal/news"
 	"github.com/osman/bot-traider/internal/ollama"
 	"github.com/osman/bot-traider/internal/orderbook"
@@ -127,6 +128,7 @@ func main() {
 	// Объявляем переменные заранее — хук захватит их по ссылке.
 	// Сами сервисы создаются позже, после инициализации tickerService.
 	var binanceTickerClient *binance.Client
+	var kucoinTickerClient *kucoin.Client
 	var volatileSvc *volatile.Service
 	var tradeSvc *trade.Service
 
@@ -137,6 +139,9 @@ func main() {
 		all := mergeSymbols(topProvider.Symbols(), openTradeSymbols(tradeSvc))
 		if binanceTickerClient != nil {
 			binanceTickerClient.NotifySymbolsChanged(all)
+		}
+		if kucoinTickerClient != nil {
+			kucoinTickerClient.NotifySymbolsChanged(all)
 		}
 	}
 
@@ -338,19 +343,60 @@ func main() {
 	// Это позволяет хуку topProvider.OnSymbolsChanged вызывать NotifySymbolsChanged на них.
 	topVolatileFetcher := topProvider.FetchSymbols
 
+	anyExchangeEnabled := false
+
 	binanceCfg := binance.LoadConfig()
 	log.Info("binance config loaded", zap.Bool("enabled", binanceCfg.Enabled))
-	if !binanceCfg.Enabled {
-		log.Warn("binance disabled, bot will do nothing")
-		<-ctx.Done()
-		return
+	if binanceCfg.Enabled {
+		anyExchangeEnabled = true
+		log.Info("starting binance")
+		binanceTickerClient = binance.NewClient(binanceCfg, log.With(zap.String("market", "binance")), st, tickerService)
+		binanceTickerClient.WithSymbolFetcher(topVolatileFetcher)
+		go func() {
+			if err := binanceTickerClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("binance client stopped", zap.Error(err))
+			}
+		}()
+	} else {
+		log.Info("binance disabled (BINANCE_ENABLED=false)")
 	}
-	log.Info("starting binance")
-	binanceTickerClient = binance.NewClient(binanceCfg, log.With(zap.String("market", "binance")), st, tickerService)
-	binanceTickerClient.WithSymbolFetcher(topVolatileFetcher)
-	if err := binanceTickerClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		log.Error("binance client stopped", zap.Error(err))
+
+	kucoinCfg := kucoin.LoadConfig()
+	log.Info("kucoin config loaded", zap.Bool("enabled", kucoinCfg.Enabled))
+	if kucoinCfg.Enabled {
+		anyExchangeEnabled = true
+
+		// REST клиент (для торговли, если API ключи заданы)
+		kucoinRest := kucoin.NewRestClient(ctx, log.With(zap.String("component", "kucoin-rest")))
+		if kucoinRest.HasAPIKeys() {
+			restClients["kucoin"] = kucoinRest
+			log.Info("kucoin: trading enabled")
+		} else {
+			log.Info("kucoin: market data only (no API keys)")
+		}
+
+		// WS клиент для рыночных данных
+		log.Info("starting kucoin")
+		kucoinTickerClient = kucoin.NewClient(kucoinCfg, log.With(zap.String("market", "kucoin")), st, tickerService)
+		kucoinTickerClient.WithSymbolFetcher(func(ctx context.Context) ([]string, error) {
+			// Используем те же топ-символы что и Binance
+			return topProvider.Symbols(), nil
+		})
+		go func() {
+			if err := kucoinTickerClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("kucoin client stopped", zap.Error(err))
+			}
+		}()
+	} else {
+		log.Info("kucoin disabled (KUCOIN_ENABLED=false)")
 	}
+
+	if !anyExchangeEnabled {
+		log.Warn("no exchanges enabled, bot will do nothing")
+	}
+
+	<-ctx.Done()
+	log.Info("shutdown complete")
 }
 
 
