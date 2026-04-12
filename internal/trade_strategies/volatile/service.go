@@ -48,8 +48,33 @@ type Service struct {
 	log         *zap.Logger
 }
 
-// New создаёт Service.
-func New(ctx context.Context, cfg Config, tradeSvc *trade.Service, bookSvc *orderbook.Service, log *zap.Logger) *Service {
+
+func New(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.TickerService, bookSvc *orderbook.Service, symbols []string, tradeAgg *exchange_orders.TradeAggregator, log *zap.Logger)*Service {
+	volatileCfg := LoadConfig()
+	if volatileCfg.Enabled {
+		volatileSvc := NewService(ctx, volatileCfg, tradeSvc, bookSvc, log.With(zap.String("component", "volatile")))
+		if tradeAgg != nil {
+			volatileSvc.WithTradeAggregator(tradeAgg)
+		}
+		volatileSvc.SetSymbols(symbols)
+		tickerService.WithOnSend(volatileSvc.OnTicker)
+		go volatileSvc.Start(ctx)
+		log.Info("volatile strategy enabled",
+			zap.String("exchange", volatileCfg.Exchange),
+			zap.Float64("bull_score_min", volatileCfg.BullScoreMin),
+			zap.Int("check_interval_sec", volatileCfg.CheckIntervalSec),
+		)
+		return volatileSvc
+	} else {
+		log.Info("volatile strategy disabled (VOLATILE_ENABLED=false)")
+	}
+
+	return nil
+
+}
+
+// NewService создаёт Service.
+func NewService(ctx context.Context, cfg Config, tradeSvc *trade.Service, bookSvc *orderbook.Service, log *zap.Logger) *Service {
 	log.Info("volatile strategy initialized",
 		zap.String("exchange", cfg.Exchange),
 		zap.Float64("bull_score_min", cfg.BullScoreMin),

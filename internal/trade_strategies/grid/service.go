@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/shared/exchange"
@@ -28,6 +29,24 @@ type Service struct {
 	tradesThreadID int
 	log            *zap.Logger
 	repo           *GridRepository // nil если persistence не настроена
+}
+
+
+func New(ctx context.Context, pool *pgxpool.Pool, tickerService *ticker.TickerService, symbols []string,gridClient exchange.RestClient, tgNotifier *telegram.Notifier, tradesThreadID int, log *zap.Logger) {
+	gridCfg := LoadConfig()
+	if gridCfg.Enabled {
+		if gridClient == nil {
+			log.Fatal("grid: unknown exchange in GRID_EXCHANGE",
+				zap.String("exchange", gridCfg.Exchange))
+		}
+		gridSvc := NewService(gridCfg, symbols, gridClient, log.With(zap.String("component", "grid")), tgNotifier, tradesThreadID)
+		gridSvc.WithRepository(NewGridRepository(pool))
+		gridSvc.Start(ctx, symbols)
+		tickerService.WithOnSend(gridSvc.OnTicker)
+		log.Info("grid strategy enabled", zap.Strings("symbols", gridCfg.Symbols))
+	} else {
+		log.Info("grid strategy disabled (GRID_ENABLED=false)")
+	}
 }
 
 // NewService создаёт Service.

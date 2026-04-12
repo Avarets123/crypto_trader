@@ -8,7 +8,9 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/osman/bot-traider/internal/news/rss"
+	"github.com/osman/bot-traider/internal/ollama"
 )
 
 // TelegramNotifier — интерфейс для отправки уведомлений в Telegram-топик.
@@ -32,6 +34,25 @@ type Service struct {
 	notifier         TelegramNotifier
 	newsThreadID     int
 	summarizer       Summarizer
+}
+
+
+func New(ctx context.Context, pool *pgxpool.Pool, tgNotifier TelegramNotifier, newsEnabled bool, newsThreadID int, intervalMin int, log *zap.Logger) {
+		if newsEnabled {
+		newsRepo := NewRepository(pool, log.With(zap.String("component", "news")))
+		newsSvc := NewService(newsRepo, log.With(zap.String("component", "news")), intervalMin)
+		newsSvc.WithTelegramNotifier(tgNotifier, newsThreadID)
+		ollamaClient := ollama.NewClient(ollama.LoadConfig())
+		newsSvc.WithSummarizer(ollamaClient)
+		log.Info("news: Ollama summarizer enabled",
+			zap.String("url", ollama.LoadConfig().URL),
+			zap.String("model", ollama.LoadConfig().Model),
+		)
+		go newsSvc.Start(ctx)
+		log.Info("news: RSS parser enabled", zap.Int("news_thread_id", newsThreadID))
+	} else {
+		log.Info("news: RSS parser disabled (NEWS_ENABLED=false)")
+	}
 }
 
 // NewService создаёт Service.

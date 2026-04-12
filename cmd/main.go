@@ -18,12 +18,9 @@ import (
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/kucoin"
 	"github.com/osman/bot-traider/internal/news"
-	"github.com/osman/bot-traider/internal/ollama"
 	"github.com/osman/bot-traider/internal/orderbook"
-	"github.com/osman/bot-traider/internal/shared/comparator"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
-	"github.com/osman/bot-traider/internal/shared/detector"
 	"github.com/osman/bot-traider/internal/shared/exchange"
 	"github.com/osman/bot-traider/internal/shared/logger"
 	redisclient "github.com/osman/bot-traider/internal/shared/redis"
@@ -32,7 +29,6 @@ import (
 	"github.com/osman/bot-traider/internal/ticker"
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
-	"github.com/osman/bot-traider/internal/trade_strategies/momentum"
 	"github.com/osman/bot-traider/internal/trade_strategies/volatile"
 )
 
@@ -63,8 +59,7 @@ func main() {
 	}()
 
 	binanceRest := binance.NewRestClient(ctx, log.With(zap.String("component", "binance-rest")))
-
-	tgNotifier, tgAgg := initTg(ctx, log)
+	tgNotifier, _ := initTg(ctx, log)
 
 	// --- Order Book ---
 	obStore := orderbook.NewStore()
@@ -75,15 +70,15 @@ func main() {
 	)
 	obSvc := orderbook.NewService(obFetcher, obStore, log.With(zap.String("component", "orderbook")))
 
-	// --- Top Volatile Provider — единственный источник топ-15 монет ---
+	// --- Top Volatile Provider — единственный источник топ-10 монет ---
 	// Интервал обновления берётся из ORDERBOOK_REFRESH_INTERVAL_MIN (общий с orderbook-alerts).
 	alertCfg := orderbook.LoadAlertsConfig()
-	topProvider := binance.NewTopVolatileProvider(binanceRest, 15, log.With(zap.String("component", "top-volatile")))
+	topProvider := binance.NewTopVolatileProvider(binanceRest, 10, log.With(zap.String("component", "top-volatile")))
 	if err := topProvider.Fetch(ctx); err != nil {
 		log.Fatal("top volatile: initial fetch failed", zap.Error(err))
 	}
 
-	go sendTopVolatile(ctx, log, topProvider.Tickers(), tgNotifier, obSvc)
+	go sendTopVolatileBinance(ctx, log, topProvider.Tickers(), tgNotifier, obSvc)
 
 	// --- Orderbook Alerts ---
 	var alertSvc *orderbook.AlertService
@@ -133,7 +128,7 @@ func main() {
 	var tradeSvc *trade.Service
 
 	// notifyExchanges отправляет обновлённый список символов биржевым клиентам.
-	// К топ-15 добираются символы с открытыми позициями — чтобы не потерять тикеры
+	// К топ-10 добираются символы с открытыми позициями — чтобы не потерять тикеры
 	// по валютам, которые выпали из топа пока по ним есть активная сделка.
 	notifyExchanges := func() {
 		all := mergeSymbols(topProvider.Symbols(), openTradeSymbols(tradeSvc))
@@ -188,23 +183,6 @@ func main() {
 	// --- Ticker сервис ---
 	repo := ticker.NewRepository(pool, log)
 	tickerService := ticker.NewService(ctx, repo, log, ticker.LoadConfig())
-
-	// --- Comparator (спред) ---
-	spreadRepo := comparator.NewSpreadRepository(pool, log.With(zap.String("component", "comparator")))
-	cmp := comparator.New(ctx, cfg.SpreadThresholdPct, spreadRepo, log.With(zap.String("component", "comparator")))
-
-	// --- Detector (pump/crash) — только для Telegram уведомлений ---
-	detectorRepo := detector.NewDetectorRepository(pool, log.With(zap.String("component", "detector")))
-	det := detector.New(ctx, detector.LoadConfig(), detectorRepo, log.With(zap.String("component", "detector")))
-	det.WithOnPumpEvent(func(e *detector.DetectorEvent) {
-		st.RecordPump()
-		tgAgg.OnPumpEvent(e)
-	})
-	det.WithOnCrashEvent(func(e *detector.DetectorEvent) {
-		st.RecordCrash()
-		tgAgg.OnCrashEvent(e)
-	})
-
 	tradeRepo := trade.NewRepo(pool, log.With(zap.String("component", "trade-repo")))
 
 	restClients := map[string]exchange.RestClient{
@@ -238,104 +216,29 @@ func main() {
 	tradeSvc.WithOnTradeOpen(tradeNotif.OnTradeOpen)
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
 	tradeSvc.WithOnTradeCloseError(tradeNotif.OnTradeCloseError)
+
 	// При закрытии позиции сразу обновляем стримы: если символ выпал из топа
 	// пока сделка была открыта — он отпишется немедленно, не ждя следующего обновления топа.
+	//Ёп-твою-мать
 	tradeSvc.WithOnTradeClose(func(_ *trade.Trade) { notifyExchanges() })
 
 	// --- Position Monitor ---
-	posMonitorInterval := sharedconfig.GetEnvInt("POSITION_MONITOR_INTERVAL_SEC", 60)
-	posMonitor := newPositionMonitor(tradeSvc, tgNotifier, tradesThreadID, posMonitorInterval, log.With(zap.String("component", "position-monitor")))
-	tickerService.WithOnSend(posMonitor.OnTicker)
-	go posMonitor.Start(ctx)
-	log.Info("position monitor started", zap.Int("interval_sec", posMonitorInterval))
+	NewPositionMonitor(ctx, tradeSvc, tickerService, tgNotifier, tradesThreadID, log)
 
-	cmp.WithOnSpreadOpenEvent(func(_ *comparator.SpreadEvent) { st.RecordSpread() })
-	cmp.WithOnSpreadOpenEvent(tgAgg.OnSpreadOpenEvent)
-	tickerService.WithOnSend(det.Update)
-	tickerService.WithOnSend(cmp.Update)
+
 
 
 	// --- Volatile стратегия (собственный цикл, прямой доступ к стакану) ---
-	volatileCfg := volatile.LoadConfig()
-	if volatileCfg.Enabled {
-		volatileSvc = volatile.New(ctx, volatileCfg, tradeSvc, obSvc, log.With(zap.String("component", "volatile")))
-		if tradeAgg != nil {
-			volatileSvc.WithTradeAggregator(tradeAgg)
-		}
-		volatileSvc.SetSymbols(topProvider.Symbols())
-		det.WithOnCrashEvent(volatileSvc.OnCrashEvent)
-		tickerService.WithOnSend(volatileSvc.OnTicker)
-		go volatileSvc.Start(ctx)
-		log.Info("volatile strategy enabled",
-			zap.String("exchange", volatileCfg.Exchange),
-			zap.Float64("bull_score_min", volatileCfg.BullScoreMin),
-			zap.Int("check_interval_sec", volatileCfg.CheckIntervalSec),
-		)
-	} else {
-		log.Info("volatile strategy disabled (VOLATILE_ENABLED=false)")
-	}
 
-	// --- Momentum стратегия ---
-	momentumCfg := momentum.LoadConfig()
-	if momentumCfg.Enabled {
-		momentumSvc := momentum.New(ctx, momentumCfg, tradeSvc, log.With(zap.String("component", "momentum")))
-		det.WithOnPumpEvent(momentumSvc.OnPumpEvent)
-		det.WithOnCrashEvent(momentumSvc.OnCrashEvent)
-		tickerService.WithOnSend(momentumSvc.OnTicker)
-		log.Info("momentum strategy enabled",
-			zap.String("signal_exchange", momentumCfg.SignalExchange),
-		)
-	} else {
-		log.Info("momentum strategy disabled (MOMENTUM_ENABLED=false)")
-	}
+	volatileSvc = volatile.New(ctx, tradeSvc, tickerService, obSvc, topProvider.Symbols(), tradeAgg, log)
 
-	// --- Grid стратегия ---
+
 	gridCfg := grid.LoadConfig()
-	if gridCfg.Enabled {
-		gridClient, ok := restClients[gridCfg.Exchange]
-		if !ok {
-			log.Fatal("grid: unknown exchange in GRID_EXCHANGE",
-				zap.String("exchange", gridCfg.Exchange))
-		}
-		gridSvc := grid.NewService(gridCfg, topProvider.Symbols(), gridClient, log.With(zap.String("component", "grid")), tgNotifier, tradesThreadID)
-		gridSvc.WithRepository(grid.NewGridRepository(pool))
-		gridSvc.Start(ctx, topProvider.Symbols())
-		tickerService.WithOnSend(gridSvc.OnTicker)
-		log.Info("grid strategy enabled", zap.Strings("symbols", gridCfg.Symbols))
-	} else {
-		log.Info("grid strategy disabled (GRID_ENABLED=false)")
-	}
+	grid.New(ctx, pool, tickerService, topProvider.Symbols(), restClients[gridCfg.Exchange], tgNotifier, tradesThreadID, log)
+
 
 	// --- RSS News ---
-	newsEnabled := sharedconfig.GetEnvBool("NEWS_ENABLED", false)
-	if newsEnabled {
-		newsRepo := news.NewRepository(pool, log.With(zap.String("component", "news")))
-		newsSvc := news.NewService(newsRepo, log.With(zap.String("component", "news")), sharedconfig.GetEnvInt("NEWS_FETCH_INTERVAL_MIN", 30))
-		newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
-		newsSvc.WithTelegramNotifier(tgNotifier, newsThreadID)
-		ollamaClient := ollama.NewClient(ollama.LoadConfig())
-		newsSvc.WithSummarizer(ollamaClient)
-		log.Info("news: Ollama summarizer enabled",
-			zap.String("url", ollama.LoadConfig().URL),
-			zap.String("model", ollama.LoadConfig().Model),
-		)
-		go newsSvc.Start(ctx)
-		log.Info("news: RSS parser enabled", zap.Int("news_thread_id", newsThreadID))
-	} else {
-		log.Info("news: RSS parser disabled (NEWS_ENABLED=false)")
-	}
-
-	// --- Volume Spike детектор ---
-	volDetector := detector.NewVolumeDetector(ctx, detectorRepo, log.With(zap.String("component", "volume-detector")))
-	volDetector.WithOnVolumeSpike(func(e detector.VolumeEvent) {
-		if e.Type == detector.SpikeTypeC {
-			// тип C — памп, обрабатывается momentum стратегией
-			return
-		}
-		st.RecordVolumeSpike()
-		tgAgg.OnVolumeSpike(e)
-	})
-	tickerService.WithOnSend(volDetector.OnTicker)
+	news.New(ctx, pool, tgNotifier, false, sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0), sharedconfig.GetEnvInt("NEWS_FETCH_INTERVAL_MIN", 30), log )
 
 
 	// --- Запуск бирж ---
@@ -375,6 +278,9 @@ func main() {
 			log.Info("kucoin: market data only (no API keys)")
 		}
 
+		// Топ-10 волатильных KuCoin в Telegram
+		go sendTopVolatileKucoin(ctx, log, kucoinRest, tgNotifier)
+
 		// WS клиент для рыночных данных
 		log.Info("starting kucoin")
 		kucoinTickerClient = kucoin.NewClient(kucoinCfg, log.With(zap.String("market", "kucoin")), st, tickerService)
@@ -400,8 +306,8 @@ func main() {
 }
 
 
-func sendTopVolatile(ctx context.Context, log *zap.Logger, tickers []binance.VolatileTicker, tg *telegram.Notifier, obSvc *orderbook.Service) {
-
+// sendTopVolatileBinance отправляет топ-10 волатильных пар Binance со стаканами в Telegram.
+func sendTopVolatileBinance(ctx context.Context, log *zap.Logger, tickers []binance.VolatileTicker, tg *telegram.Notifier, obSvc *orderbook.Service) {
 	symbols := make([]string, len(tickers))
 	for i, t := range tickers {
 		symbols[i] = t.Symbol
@@ -410,7 +316,6 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, tickers []binance.Vol
 	// Запускаем diff-стримы: REST-снимок 5000 уровней + WS дельты в фоне
 	obSvc.Init(ctx, symbols)
 
-	// Ждём инициализации стаканов (REST-запросы выполняются в фоне)
 	// Небольшая пауза чтобы первые снапшоты успели загрузиться
 	select {
 	case <-ctx.Done():
@@ -420,8 +325,14 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, tickers []binance.Vol
 
 	newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
 
-	msg := "🔥 <b>Топ-15 волатильных криптовалют (Binance, 24ч)</b>\n\n"
-	for i, t := range tickers {
+	// Берём топ-10
+	top := tickers
+	if len(top) > 10 {
+		top = top[:10]
+	}
+
+	msg := "🔥 <b>Топ-10 волатильных криптовалют (Binance, 24ч)</b>\n\n"
+	for i, t := range top {
 		arrow := "📈"
 		if t.PriceChangePercent < 0 {
 			arrow = "📉"
@@ -440,13 +351,50 @@ func sendTopVolatile(ctx context.Context, log *zap.Logger, tickers []binance.Vol
 			msg += formatOrderBook(ob)
 		}
 
+		if i < len(top)-1 {
+			msg += "\n"
+		}
+	}
+
+	tg.SendToThread(ctx, msg, newsThreadID)
+	log.Info("binance top volatile sent to telegram")
+}
+
+// sendTopVolatileKucoin получает и отправляет топ-10 волатильных пар KuCoin в Telegram.
+func sendTopVolatileKucoin(ctx context.Context, log *zap.Logger, rest *kucoin.RestClient, tg *telegram.Notifier) {
+	newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
+
+	tickers, err := rest.GetTopVolatile(ctx, 10)
+	if err != nil {
+		log.Warn("kucoin: failed to get top volatile", zap.Error(err))
+		return
+	}
+
+	if len(tickers) == 0 {
+		log.Warn("kucoin: top volatile list is empty")
+		return
+	}
+
+	msg := "🔥 <b>Топ-10 волатильных криптовалют (KuCoin, 24ч)</b>\n\n"
+	for i, t := range tickers {
+		arrow := "📈"
+		if t.PriceChangePercent < 0 {
+			arrow = "📉"
+		}
+		sign := "+"
+		if t.PriceChangePercent < 0 {
+			sign = ""
+		}
+		msg += fmt.Sprintf("%s <b>%s</b>  %s%.2f%%  <code>$%s</code>",
+			arrow, t.Symbol, sign, t.PriceChangePercent, formatPrice(t.LastPrice))
+
 		if i < len(tickers)-1 {
 			msg += "\n"
 		}
 	}
 
 	tg.SendToThread(ctx, msg, newsThreadID)
-	log.Info("top volatile sent to telegram")
+	log.Info("kucoin top volatile sent to telegram")
 }
 
 func formatOrderBook(ob *orderbook.OrderBook) string {

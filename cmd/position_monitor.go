@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/zap"
 
+	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
 	"github.com/osman/bot-traider/internal/trade"
@@ -25,6 +26,14 @@ type positionMonitor struct {
 
 	mu            sync.RWMutex
 	currentPrices map[string]float64 // symbol -> последняя цена
+}
+
+func NewPositionMonitor(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.TickerService, notifier *telegram.Notifier, tradesThreadID int, log *zap.Logger) {
+	posMonitorInterval := sharedconfig.GetEnvInt("POSITION_MONITOR_INTERVAL_SEC", 60)
+	posMonitor := newPositionMonitor(tradeSvc, notifier, tradesThreadID, posMonitorInterval, log.With(zap.String("component", "position-monitor")))
+	tickerService.WithOnSend(posMonitor.OnTicker)
+	go posMonitor.Start(ctx)
+	log.Info("position monitor started", zap.Int("interval_sec", posMonitorInterval))
 }
 
 func newPositionMonitor(
