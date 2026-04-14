@@ -100,20 +100,20 @@ func main() {
 	st := stats.New(ctx, log)
 
 	// --- Exchange Orders ---
-	// tradeAgg объявлен здесь чтобы volatile стратегия могла получить к нему доступ.
+	// tradeAgg и eoFetcher объявлены здесь, wiring trade-хуков выполняется после создания volatile.
 	var tradeAgg *exchange_orders.TradeAggregator
 	var eoSvc *exchange_orders.Service
+	var eoFetcher *exchange_orders.Fetcher
 	if sharedconfig.GetEnvBool("EXCHANGE_ORDERS_ENABLED", false) {
 		eoRepo := exchange_orders.NewRepository(pool, log.With(zap.String("component", "exchange-orders")))
 		eoRepo.WithOnSaved(st.RecordExchangeOrders)
-		eoFetcher := exchange_orders.NewFetcher(
+		eoFetcher = exchange_orders.NewFetcher(
 			"binance",
 			sharedconfig.GetEnv("BINANCE_WS_URL", "wss://stream.binance.com:9443"),
 			eoRepo,
 			log.With(zap.String("component", "exchange-orders")),
 		)
 		tradeAgg = exchange_orders.NewTradeAggregator()
-		eoFetcher.WithOnTrade(tradeAgg.OnTrade)
 		if alertSvc != nil {
 			alertSvc.WithTradeAggregator(tradeAgg)
 		}
@@ -230,9 +230,21 @@ func main() {
 	notifications.NewPositionMonitor(ctx, tradeSvc, tickerService, tgNotifier, tradesThreadID, log)
 
 
-	// --- Volatile стратегия (собственный цикл, прямой доступ к стакану) ---
+	// --- Volatile стратегия (микроскальпинг, событийный вход по taker buy) ---
+	volatileSvc = volatile.New(ctx, tradeSvc, tickerService, obSvc, []string{"BTCUSDT", "ETHUSDT"}, log)
 
-	volatileSvc = volatile.New(ctx, tradeSvc, tickerService, obSvc, []string{"BTCUSDT", "ETHUSDT"}, tradeAgg, log)
+	// Подключаем fan-out trade-хука: tradeAgg (для alerts) + volatile (для CVD/whale метрик).
+	// Wiring после создания volatileSvc чтобы передать корректный указатель.
+	if eoFetcher != nil {
+		eoFetcher.WithOnTrade(func(o exchange_orders.ExchangeOrder) {
+			if tradeAgg != nil {
+				tradeAgg.OnTrade(o)
+			}
+			if volatileSvc != nil {
+				volatileSvc.OnTrade(o)
+			}
+		})
+	}
 
 
 	gridCfg := grid.LoadConfig()

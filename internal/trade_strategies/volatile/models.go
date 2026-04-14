@@ -2,15 +2,15 @@ package volatile
 
 import "time"
 
-// VolatileTrade описывает одну открытую сделку Volatile стратегии.
+// VolatileTrade описывает одну открытую сделку микроскальпинг стратегии.
 type VolatileTrade struct {
 	ID         int64
 	Symbol     string
-	Exchange   string    // биржа где куплен актив
+	Exchange   string
 	EntryPrice float64
-	PeakPrice  float64   // максимальная цена с момента входа (для trailing stop)
+	TPPrice    float64      // цена тейк-профита (стена сопротивления или fallback)
 	Qty        float64
-	BullScore  float64   // значение BullScore в момент входа
+	OBI        float64      // OBI_1pct в момент входа
 	OpenedAt   time.Time
 	PriceCh    chan float64  // канал текущих цен для горутины мониторинга
 	CrashCh    chan struct{} // сигнал crash-события для немедленного выхода
