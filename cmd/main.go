@@ -15,6 +15,7 @@ import (
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/kucoin"
 	"github.com/osman/bot-traider/internal/news"
+	"github.com/osman/bot-traider/internal/notifications"
 	"github.com/osman/bot-traider/internal/orderbook"
 	sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 	"github.com/osman/bot-traider/internal/shared/db"
@@ -134,7 +135,7 @@ func main() {
 	// К топ-10 добираются символы с открытыми позициями — чтобы не потерять тикеры
 	// по валютам, которые выпали из топа пока по ним есть активная сделка.
 	notifyExchanges := func() {
-		all := mergeSymbols(topProvider.Symbols(), openTradeSymbols(tradeSvc))
+		all := trade.MergeSymbols(topProvider.Symbols(), trade.OpenTradeSymbols(tradeSvc))
 		if binanceTickerClient != nil {
 			binanceTickerClient.NotifySymbolsChanged(all)
 		}
@@ -210,12 +211,12 @@ func main() {
 
 	// Восстанавливаем и закрываем все позиции, оставшиеся с предыдущего запуска
 	tradesThreadID := sharedconfig.GetEnvInt("TELEGRAM_TRADES_THREAD_ID", 0)
-	recoveredTrades := recoverTrades(ctx, tradeRedisRepo, restClients, tradeRepo, log.With(zap.String("component", "recover-trades")))
+	recoveredTrades := notifications.RecoverTrades(ctx, tradeRedisRepo, restClients, tradeRepo, log.With(zap.String("component", "recover-trades")))
 	if len(recoveredTrades) > 0 {
 		log.Warn("recovered and closed positions from previous run", zap.Int("count", len(recoveredTrades)))
-		sendRecoveryNotification(ctx, tgNotifier, tradesThreadID, recoveredTrades)
+		notifications.SendRecoveryNotification(ctx, tgNotifier, tradesThreadID, recoveredTrades)
 	}
-	tradeNotif := newTradeNotifier(ctx, tgNotifier, log.With(zap.String("component", "trade-notifier")), tradesThreadID)
+	tradeNotif := notifications.NewTradeNotifier(ctx, tgNotifier, log.With(zap.String("component", "trade-notifier")), tradesThreadID)
 	tradeSvc.WithOnTradeOpen(tradeNotif.OnTradeOpen)
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
 	tradeSvc.WithOnTradeCloseError(tradeNotif.OnTradeCloseError)
@@ -226,7 +227,7 @@ func main() {
 	tradeSvc.WithOnTradeClose(func(_ *trade.Trade) { notifyExchanges() })
 
 	// --- Position Monitor ---
-	NewPositionMonitor(ctx, tradeSvc, tickerService, tgNotifier, tradesThreadID, log)
+	notifications.NewPositionMonitor(ctx, tradeSvc, tickerService, tgNotifier, tradesThreadID, log)
 
 
 	// --- Volatile стратегия (собственный цикл, прямой доступ к стакану) ---
@@ -343,7 +344,7 @@ func sendTopVolatileBinance(ctx context.Context, log *zap.Logger, tickers []bina
 			sign = ""
 		}
 		msg += fmt.Sprintf("%s <b>%s</b>  %s%.2f%%  <code>$%s</code>\n",
-			arrow, t.Symbol, sign, t.PriceChangePercent, formatPrice(t.LastPrice))
+			arrow, t.Symbol, sign, t.PriceChangePercent, notifications.FormatPrice(t.LastPrice))
 
 		ob, ok := obSvc.GetBook(t.Symbol)
 		if !ok {
@@ -387,7 +388,7 @@ func sendTopVolatileKucoin(ctx context.Context, log *zap.Logger, rest *kucoin.Re
 			sign = ""
 		}
 		msg += fmt.Sprintf("%s <b>%s</b>  %s%.2f%%  <code>$%s</code>",
-			arrow, t.Symbol, sign, t.PriceChangePercent, formatPrice(t.LastPrice))
+			arrow, t.Symbol, sign, t.PriceChangePercent, notifications.FormatPrice(t.LastPrice))
 
 		if i < len(tickers)-1 {
 			msg += "\n"

@@ -1,11 +1,7 @@
-package main
+package trade
 
-import "github.com/osman/bot-traider/internal/trade"
-
-// openTradeSymbols возвращает уникальные символы всех открытых позиций.
-// Если tradeSvc ещё не инициализирован — возвращает nil.
-func openTradeSymbols(svc *trade.Service) []string {
-
+// OpenTradeSymbols возвращает уникальные символы всех открытых позиций.
+func OpenTradeSymbols(svc *Service) []string {
 	trades := svc.GetOpenTrades()
 	seen := make(map[string]struct{}, len(trades))
 	result := make([]string, 0, len(trades))
@@ -18,8 +14,8 @@ func openTradeSymbols(svc *trade.Service) []string {
 	return result
 }
 
-// mergeSymbols объединяет два среза символов без дублей.
-func mergeSymbols(base, extra []string) []string {
+// MergeSymbols объединяет два среза символов без дублей.
+func MergeSymbols(base, extra []string) []string {
 	if len(extra) == 0 {
 		return base
 	}

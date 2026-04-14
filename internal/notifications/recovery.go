@@ -1,4 +1,4 @@
-package main
+package notifications
 
 import (
 	"context"
@@ -13,9 +13,9 @@ import (
 	"github.com/osman/bot-traider/internal/trade"
 )
 
-// recoverTrades загружает открытые позиции из Redis, закрывает их рыночным ордером,
+// RecoverTrades загружает открытые позиции из Redis, закрывает их рыночным ордером,
 // сохраняет в БД и удаляет из Redis. Возвращает список закрытых сделок.
-func recoverTrades(
+func RecoverTrades(
 	ctx context.Context,
 	redisRepo *trade.TradeRedisRepository,
 	clients map[string]exchange.RestClient,
@@ -97,8 +97,8 @@ func recoverTrades(
 	return closed
 }
 
-// sendRecoveryNotification отправляет одно Telegram-сообщение о всех закрытых при старте позициях.
-func sendRecoveryNotification(ctx context.Context, notifier *telegram.Notifier, threadID int, trades []trade.Trade) {
+// SendRecoveryNotification отправляет одно Telegram-сообщение о всех закрытых при старте позициях.
+func SendRecoveryNotification(ctx context.Context, notifier *telegram.Notifier, threadID int, trades []trade.Trade) {
 	if len(trades) == 0 {
 		return
 	}
@@ -115,10 +115,10 @@ func sendRecoveryNotification(ctx context.Context, notifier *telegram.Notifier, 
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "%s <b>%s</b> [%s] | %s\n",
 			strategyEmoji(t.Strategy), t.Symbol, strategyLabel(t.Strategy), t.TradeExchange)
-		fmt.Fprintf(&sb, "  Вход: <code>%s</code>", formatPrice(t.EntryPrice))
+		fmt.Fprintf(&sb, "  Вход: <code>%s</code>", FormatPrice(t.EntryPrice))
 		if t.ExitPrice != nil {
 			changePct := (*t.ExitPrice - t.EntryPrice) / t.EntryPrice * 100
-			fmt.Fprintf(&sb, " → Выход: <code>%s</code>  %s\n", formatPrice(*t.ExitPrice), formatChangePct(changePct))
+			fmt.Fprintf(&sb, " → Выход: <code>%s</code>  %s\n", FormatPrice(*t.ExitPrice), formatChangePct(changePct))
 		} else {
 			sb.WriteString("\n")
 		}
@@ -126,7 +126,7 @@ func sendRecoveryNotification(ctx context.Context, notifier *telegram.Notifier, 
 			fmt.Fprintf(&sb, "  PnL: <b>%s USDT</b>", formatPnl(*t.PnlUSDT))
 		}
 		if t.CommissionUSDT != nil {
-			fmt.Fprintf(&sb, " | Комиссия: %s USDT", formatPrice(*t.CommissionUSDT))
+			fmt.Fprintf(&sb, " | Комиссия: %s USDT", FormatPrice(*t.CommissionUSDT))
 		}
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "  Держали: %d мин\n", holdMin)

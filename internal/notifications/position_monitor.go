@@ -1,4 +1,4 @@
-package main
+package notifications
 
 import (
 	"context"
@@ -103,12 +103,12 @@ func (m *positionMonitor) sendReport(ctx context.Context) {
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "%s <b>%s</b> [%s] | %s\n",
 			strategyEmoji(t.Strategy), t.Symbol, strategyLabel(t.Strategy), t.TradeExchange)
-		fmt.Fprintf(&sb, "  Вход: <code>%s</code>", formatPrice(t.EntryPrice))
+		fmt.Fprintf(&sb, "  Вход: <code>%s</code>", FormatPrice(t.EntryPrice))
 
 		if hasCurrent {
 			changePct := (currentPrice - t.EntryPrice) / t.EntryPrice * 100
 			unrealizedPnl := (currentPrice - t.EntryPrice) * t.Qty
-			fmt.Fprintf(&sb, " → Текущая: <code>%s</code>\n", formatPrice(currentPrice))
+			fmt.Fprintf(&sb, " → Текущая: <code>%s</code>\n", FormatPrice(currentPrice))
 			fmt.Fprintf(&sb, "  Изменение: <b>%s</b> | PnL: <b>%s USDT</b>\n",
 				formatChangePct(changePct), formatPnl(unrealizedPnl))
 		} else {
@@ -116,13 +116,13 @@ func (m *positionMonitor) sendReport(ctx context.Context) {
 		}
 
 		if t.TargetPrice != nil {
-			fmt.Fprintf(&sb, "  TP: %s", formatPrice(*t.TargetPrice))
+			fmt.Fprintf(&sb, "  TP: %s", FormatPrice(*t.TargetPrice))
 			if t.StopLossPrice != nil {
-				fmt.Fprintf(&sb, " | SL: %s", formatPrice(*t.StopLossPrice))
+				fmt.Fprintf(&sb, " | SL: %s", FormatPrice(*t.StopLossPrice))
 			}
 			sb.WriteString("\n")
 		} else if t.StopLossPrice != nil {
-			fmt.Fprintf(&sb, "  SL: %s\n", formatPrice(*t.StopLossPrice))
+			fmt.Fprintf(&sb, "  SL: %s\n", FormatPrice(*t.StopLossPrice))
 		}
 
 		fmt.Fprintf(&sb, "  ⏱ %d мин назад\n", minutes)
@@ -131,24 +131,4 @@ func (m *positionMonitor) sendReport(ctx context.Context) {
 	msg := strings.TrimRight(sb.String(), "\n")
 	m.log.Debug("position monitor: sending report", zap.Int("positions", len(trades)))
 	m.notifier.SendToThread(ctx, msg, m.tradesThreadID)
-}
-
-func strategyEmoji(strategy string) string {
-	switch strategy {
-	case "arb":
-		return "⚡"
-	case "momentum", "pump":
-		return "🚀"
-	case "volatile":
-		return "🌊"
-	default:
-		return "🔵"
-	}
-}
-
-func formatChangePct(pct float64) string {
-	if pct >= 0 {
-		return fmt.Sprintf("+%.2f%%", pct)
-	}
-	return fmt.Sprintf("%.2f%%", pct)
 }
