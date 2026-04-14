@@ -37,7 +37,7 @@ func (p *TopVolatileProvider) Fetch(ctx context.Context) error {
 		return err
 	}
 	p.mu.Lock()
-	p.tickers = tickers
+	p.tickers = []VolatileTicker{VolatileTicker{Symbol: "BTCUSDT"}, VolatileTicker{Symbol: "ETHUSDT"}}
 	p.mu.Unlock()
 	p.log.Info("top volatile: loaded", zap.Int("count", len(tickers)))
 	return nil
@@ -51,38 +51,38 @@ func (p *TopVolatileProvider) WithOnSymbolsChanged(fn func(added, removed []stri
 
 // Run запускает периодическое обновление кэша. Блокирует до ctx.Done().
 func (p *TopVolatileProvider) Run(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// ticker := time.NewTicker(interval)
+	// defer ticker.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			tickers, err := p.rest.GetTopVolatile(ctx, p.limit)
-			if err != nil {
-				p.log.Warn("top volatile: refresh failed", zap.Error(err))
-				continue
-			}
+	// for {
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		return
+	// 	case <-ticker.C:
+	// 		tickers, err := p.rest.GetTopVolatile(ctx, p.limit)
+	// 		if err != nil {
+	// 			p.log.Warn("top volatile: refresh failed", zap.Error(err))
+	// 			continue
+	// 		}
 
-			p.mu.Lock()
-			added, removed := diffSymbols(p.tickers, tickers)
-			p.tickers = tickers
-			p.mu.Unlock()
+	// 		p.mu.Lock()
+	// 		added, removed := diffSymbols(p.tickers, tickers)
+	// 		p.tickers = tickers
+	// 		p.mu.Unlock()
 
-			p.log.Info("top volatile: refreshed", zap.Int("count", len(tickers)))
+	// 		p.log.Info("top volatile: refreshed", zap.Int("count", len(tickers)))
 
-			if len(added) > 0 || len(removed) > 0 {
-				p.log.Info("top volatile: list changed",
-					zap.Strings("added", added),
-					zap.Strings("removed", removed),
-				)
-				if p.onChanged != nil {
-					p.onChanged(added, removed)
-				}
-			}
-		}
-	}
+	// 		if len(added) > 0 || len(removed) > 0 {
+	// 			p.log.Info("top volatile: list changed",
+	// 				zap.Strings("added", added),
+	// 				zap.Strings("removed", removed),
+	// 			)
+	// 			if p.onChanged != nil {
+	// 				p.onChanged(added, removed)
+	// 			}
+	// 		}
+	// 	}
+	// }
 }
 
 // diffSymbols вычисляет разницу между старым и новым списком тикеров.
@@ -131,5 +131,6 @@ func (p *TopVolatileProvider) Symbols() []string {
 // FetchSymbols возвращает закэшированный список символов без REST-запроса.
 // Совместим с сигнатурой fetchFn для SymbolWatcher.
 func (p *TopVolatileProvider) FetchSymbols(ctx context.Context) ([]string, error) {
+	return []string{"BTCUSDT", "ETHUSDT"}, nil
 	return p.Symbols(), nil
 }

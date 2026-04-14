@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/osman/bot-traider/internal/shared/utils"
+	"go.uber.org/zap"
 )
 
 // LocalBook — полный стакан одного символа в памяти.
@@ -24,7 +27,9 @@ func newLocalBook() *LocalBook {
 }
 
 // Init инициализирует стакан из REST-снимка.
-func (lb *LocalBook) Init(bids, asks [][2]string, lastUpdateID int64) {
+func (lb *LocalBook) Init(bids, asks [][2]string, lastUpdateID int64, log *zap.Logger) {
+	defer utils.TimeTracker(log, "Init local_book")()
+
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 	lb.bids = make(map[string]string, len(bids))
@@ -79,7 +84,9 @@ func applyEntries(m map[string]string, rows [][]json.RawMessage) {
 
 // Snapshot возвращает отсортированный снимок стакана.
 // Bids — по убыванию цены, Asks — по возрастанию.
-func (lb *LocalBook) Snapshot(symbol string) OrderBook {
+func (lb *LocalBook) Snapshot(log *zap.Logger,symbol string) OrderBook {
+	defer utils.TimeTracker(log, "Snapshot local_book", true)()
+
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 	return OrderBook{
@@ -91,6 +98,7 @@ func (lb *LocalBook) Snapshot(symbol string) OrderBook {
 }
 
 func sortedEntries(m map[string]string, desc bool) []Entry {
+
 	type kv struct {
 		price    float64
 		priceStr string
@@ -141,14 +149,14 @@ func (s *Store) GetOrCreate(symbol string) *LocalBook {
 
 // Snapshot возвращает снимок стакана по символу.
 // Возвращает false если символ ещё не инициализирован.
-func (s *Store) Snapshot(symbol string) (*OrderBook, bool) {
+func (s *Store) Snapshot(symbol string, log *zap.Logger) (*OrderBook, bool) {
 	s.mu.RLock()
 	lb, ok := s.books[symbol]
 	s.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
-	ob := lb.Snapshot(symbol)
+	ob := lb.Snapshot(log,symbol)
 	return &ob, true
 }
 

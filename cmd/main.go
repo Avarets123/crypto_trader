@@ -11,9 +11,6 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-
 	"github.com/osman/bot-traider/internal/binance"
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/kucoin"
@@ -30,6 +27,8 @@ import (
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/volatile"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func main() {
@@ -78,7 +77,11 @@ func main() {
 		log.Fatal("top volatile: initial fetch failed", zap.Error(err))
 	}
 
-	go sendTopVolatileBinance(ctx, log, topProvider.Tickers(), tgNotifier, obSvc)
+	go sendTopVolatileBinance(ctx, log, []binance.VolatileTicker{binance.VolatileTicker{
+		Symbol: "BTCUSDT",
+	}, binance.VolatileTicker{
+		Symbol: "ETHUSDT",
+	}}, tgNotifier, obSvc)
 
 	// --- Orderbook Alerts ---
 	var alertSvc *orderbook.AlertService
@@ -90,7 +93,7 @@ func main() {
 			alertCfg,
 			log.With(zap.String("component", "orderbook-alerts")),
 		)
-		alertSvc.SetSymbols(topProvider.Symbols())
+		alertSvc.SetSymbols([]string{"BTCUSDT", "ETHUSDT"})
 	}
 
 	st := stats.New(ctx, log)
@@ -114,7 +117,7 @@ func main() {
 			alertSvc.WithTradeAggregator(tradeAgg)
 		}
 		eoSvc = exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
-		eoSvc.Start(ctx, topProvider.Symbols())
+		eoSvc.Start(ctx, []string{"BTCUSDT", "ETHUSDT"})
 		log.Info("exchange_orders: enabled")
 	} else {
 		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
@@ -226,11 +229,9 @@ func main() {
 	NewPositionMonitor(ctx, tradeSvc, tickerService, tgNotifier, tradesThreadID, log)
 
 
-
-
 	// --- Volatile стратегия (собственный цикл, прямой доступ к стакану) ---
 
-	volatileSvc = volatile.New(ctx, tradeSvc, tickerService, obSvc, topProvider.Symbols(), tradeAgg, log)
+	volatileSvc = volatile.New(ctx, tradeSvc, tickerService, obSvc, []string{"BTCUSDT", "ETHUSDT"}, tradeAgg, log)
 
 
 	gridCfg := grid.LoadConfig()

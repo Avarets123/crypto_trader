@@ -14,7 +14,7 @@ type AlertsConfig struct {
 // LoadAlertsConfig читает конфигурацию из env-переменных.
 func LoadAlertsConfig() AlertsConfig {
 	return AlertsConfig{
-		Enabled:            sharedconfig.GetEnvBool("ORDERBOOK_ALERTS_ENABLED", false),
+		Enabled:            sharedconfig.GetEnvBool("ORDERBOOK_ALERTS_ENABLED", true),
 		VolumeChangePct:    sharedconfig.GetEnvFloat("ORDERBOOK_VOLUME_CHANGE_PCT", 20.0),
 		CheckIntervalSec:   sharedconfig.GetEnvInt("ORDERBOOK_CHECK_INTERVAL_SEC", 30),
 		RefreshIntervalMin: sharedconfig.GetEnvInt("ORDERBOOK_REFRESH_INTERVAL_MIN", 5),

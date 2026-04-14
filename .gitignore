@@ -6,6 +6,8 @@ bin/
 *.so
 *.dylib
 
+graphify-out
+
 # Test binaries
 *.test
 *.out

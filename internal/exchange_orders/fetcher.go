@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/osman/bot-traider/internal/shared/utils"
 	"go.uber.org/zap"
 )
 
@@ -100,6 +101,8 @@ func (f *Fetcher) Subscribe(ctx context.Context, symbol string) {
 
 // readLoop читает сообщения и флашит батч каждые 500мс или при 100 записях.
 func (f *Fetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbol string) {
+	defer utils.TimeTracker(f.log, "readLoop; exchange_orders fetcher")()
+
 	buf := make([]ExchangeOrder, 0, flushSize)
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()

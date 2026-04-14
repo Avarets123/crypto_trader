@@ -215,7 +215,7 @@ func (s *Service) checkSignals() {
 		// Компоненты BullScore из статистики сделок за скользящее окно.
 		var tfi, volImb, aggrRatio float64
 		if s.tradeAgg != nil {
-			win := s.tradeAgg.GetWindow(sym, time.Duration(s.cfg.TradeWindowSec)*time.Second)
+			win := s.tradeAgg.GetWindow(sym, time.Duration(s.cfg.TradeWindowSec)*time.Second, s.log)
 			if tc := float64(win.BuyCount + win.SellCount); tc > 0 {
 				tfi = float64(win.BuyCount-win.SellCount) / tc
 			}

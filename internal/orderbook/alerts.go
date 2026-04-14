@@ -13,6 +13,7 @@ import (
 
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/shared/telegram"
+	"github.com/osman/bot-traider/internal/shared/utils"
 )
 
 // bookSnapshot — снимок объёма и цены стакана в момент времени.
@@ -163,6 +164,7 @@ type volumeAlertEntry struct {
 // checkVolumes проверяет изменение объёма стакана для каждого символа
 // и отправляет одно сводное сообщение по всем изменениям.
 func (s *AlertService) checkVolumes(ctx context.Context) {
+	defer utils.TimeTracker(s.log, "checkVolume")()
 	s.mu.Lock()
 	symbols := make([]string, len(s.symbols))
 	copy(symbols, s.symbols)
@@ -180,7 +182,7 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 		// Объём покупок (bids) и продаж (asks) в USDT.
 		// Используем только топ-50 уровней: они несут реальное торговое давление,
 		// дальние ордера только размывают OBI-сигнал.
-		const obiDepth = 50
+		const obiDepth = 20
 		var bidVol, askVol float64
 		for i, e := range ob.Bids {
 			if i >= obiDepth {
@@ -242,8 +244,8 @@ func (s *AlertService) checkVolumes(ctx context.Context) {
 		// Статистика за скользящее окно — для сигналов (агрессивность, TFI, VolImb).
 		var win exchange_orders.TradeStats
 		if s.tradeAgg != nil {
-			trades = s.tradeAgg.Get(sym)
-			win = s.tradeAgg.GetWindow(sym, time.Duration(s.cfg.TradeWindowSec)*time.Second)
+			trades = s.tradeAgg.Get(sym, s.log)
+			win = s.tradeAgg.GetWindow(sym, time.Duration(s.cfg.TradeWindowSec)*time.Second, s.log)
 		}
 
 		// Trade Flow Imbalance: реальные исполненные сделки за окно, не спуфится.

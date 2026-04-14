@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/binance"
+	"github.com/osman/bot-traider/internal/shared/utils"
 )
 
 // DepthClient — интерфейс для получения снимка стакана через REST.
@@ -53,6 +54,8 @@ type diffMsg struct {
 // 5. Применяет последующие события в реальном времени
 // Reconnect с exponential backoff. Блокирует до ctx.Done().
 func (f *Fetcher) SubscribeDiff(ctx context.Context, symbol string, store *Store) {
+	defer utils.TimeTracker(f.log, "SubscribeDiff")()
+
 	wait := time.Second
 
 	for {
@@ -123,7 +126,7 @@ func (f *Fetcher) runDiffStream(ctx context.Context, symbol string, store *Store
 
 	// Инициализируем локальный стакан
 	book := store.GetOrCreate(symbol)
-	book.Init(snap.Bids, snap.Asks, snap.LastUpdateID)
+	book.Init(snap.Bids, snap.Asks, snap.LastUpdateID, f.log)
 
 	f.log.Info("orderbook: initialized from snapshot",
 		zap.String("symbol", symbol),
@@ -153,7 +156,7 @@ draining:
 					zap.Int64("lastUpdateID", snap.LastUpdateID),
 				)
 				snap.LastUpdateID = d.FirstUpdateID - 1
-				book.Init(nil, nil, snap.LastUpdateID)
+				book.Init(nil, nil, snap.LastUpdateID, f.log)
 			}
 			book.Apply(d.FinalUpdateID, d.Bids, d.Asks)
 		default:

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/osman/bot-traider/internal/shared/utils"
 	"go.uber.org/zap"
 )
 
@@ -40,6 +41,8 @@ const initDelay = 300 * time.Millisecond
 // загружает REST-снимок → инициализирует LocalBook → держит WS актуальным.
 // Горутины стартуют с задержкой initDelay чтобы не превысить rate limit Binance.
 func (s *Service) Init(ctx context.Context, symbols []string) {
+	defer utils.TimeTracker(s.log, "Init; orderbook service")()
+
 	s.rootCtx = ctx
 	for i, sym := range symbols {
 		if i > 0 {
@@ -107,5 +110,5 @@ func (s *Service) stopSymbol(symbol string) {
 // GetBook возвращает актуальный снимок стакана из памяти.
 // Возвращает false если символ ещё не инициализирован.
 func (s *Service) GetBook(symbol string) (*OrderBook, bool) {
-	return s.store.Snapshot(symbol)
+	return s.store.Snapshot(symbol, s.log)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/osman/bot-traider/internal/shared/utils"
 	"go.uber.org/zap"
 )
 
@@ -41,6 +42,8 @@ func (s *TickerService) WithOnSend(fn func(Ticker)) {
 // Send вызывает все onSend-хуки (comparator, detector, arb) всегда,
 // затем неблокирующе пишет в канал хранилища — при переполнении дропает только запись в БД.
 func (s *TickerService) Send(t Ticker) {
+	defer utils.TimeTracker(s.log, "Send; exchange_orders fetcher")()
+
 	for _, fn := range s.onSend {
 		fn(t)
 	}

@@ -4,6 +4,9 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/osman/bot-traider/internal/shared/utils"
+	"go.uber.org/zap"
 )
 
 // TradeStats — агрегированная статистика сделок за интервал.
@@ -67,7 +70,9 @@ func (a *TradeAggregator) OnTrade(order ExchangeOrder) {
 }
 
 // Get возвращает суммарную статистику по символу с момента подписки (без сброса).
-func (a *TradeAggregator) Get(symbol string) TradeStats {
+func (a *TradeAggregator) Get(symbol string, log *zap.Logger) TradeStats {
+	defer utils.TimeTracker(log, "Get; exchange_orders aggregator", true)()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s, ok := a.stats[symbol]
@@ -79,7 +84,9 @@ func (a *TradeAggregator) Get(symbol string) TradeStats {
 
 // GetWindow возвращает статистику только за последние window времени.
 // Одновременно удаляет устаревшие события из памяти.
-func (a *TradeAggregator) GetWindow(symbol string, window time.Duration) TradeStats {
+func (a *TradeAggregator) GetWindow(symbol string, window time.Duration, log *zap.Logger) TradeStats {
+	defer utils.TimeTracker(log, "GetWindow; exchange_orders aggregator", true)()
+
 	cutoff := time.Now().Add(-window)
 
 	a.mu.Lock()
