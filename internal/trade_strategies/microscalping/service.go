@@ -308,11 +308,12 @@ func (s *Service) calcOBI1pct(ob *orderbook.OrderBook, midPrice float64) float64
 }
 
 // calcTP рассчитывает цену тейк-профита:
-// первый уровень ask >= WallMult*avgVol1min в диапазоне 1% — 1 тик ниже стены.
-// Если стена не найдена — fallback: ask0 * (1 + TPFallbackPct%).
+// первый уровень ask >= WallMult*avgVol1min в диапазоне TPRangePct — 1 тик ниже стены.
+// Если стена не найдена или TP вышел <= ask0Price — fallback: ask0 * (1 + TPFallbackPct%).
 func (s *Service) calcTP(ob *orderbook.OrderBook, midPrice, ask0Price, avgVol1min float64) float64 {
 	wallThreshold := s.cfg.WallMult * avgVol1min
 	upper := midPrice * (1 + s.cfg.TPRangePct/100)
+	tickSize := calcTickSize(ob.Asks)
 
 	if wallThreshold > 0 {
 		for _, e := range ob.Asks {
@@ -325,17 +326,43 @@ func (s *Service) calcTP(ob *orderbook.OrderBook, midPrice, ask0Price, avgVol1mi
 			}
 			q, _ := strconv.ParseFloat(e.Qty, 64)
 			if q >= wallThreshold {
+				tp := p - tickSize
+				if tp <= ask0Price {
+					// Стена слишком близко к входу — 1 тик ниже ≤ entry, ищем следующую
+					continue
+				}
 				s.log.Debug("microscalping: resistance wall found",
 					zap.Float64("wall_price", p),
 					zap.Float64("wall_qty", q),
 					zap.Float64("threshold", wallThreshold),
+					zap.Float64("tick_size", tickSize),
+					zap.Float64("tp", tp),
 				)
-				return p - 0.01
+				return tp
 			}
 		}
 	}
 
 	return ask0Price * (1 + s.cfg.TPFallbackPct/100)
+}
+
+// calcTickSize вычисляет размер тика по разнице между первыми уровнями asks.
+// Если данных недостаточно — возвращает 0.01% от первого уровня как безопасный fallback.
+func calcTickSize(asks []orderbook.Entry) float64 {
+	if len(asks) >= 2 {
+		p0, err0 := strconv.ParseFloat(asks[0].Price, 64)
+		p1, err1 := strconv.ParseFloat(asks[1].Price, 64)
+		if err0 == nil && err1 == nil && p1 > p0 {
+			return p1 - p0
+		}
+	}
+	if len(asks) >= 1 {
+		p0, err := strconv.ParseFloat(asks[0].Price, 64)
+		if err == nil && p0 > 0 {
+			return p0 * 0.0001 // 0.01% fallback
+		}
+	}
+	return 0.00001
 }
 
 // tryEnter пытается открыть позицию при прохождении всех фильтров.
@@ -372,6 +399,16 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 
 	if entryPrice <= 0 {
 		return
+	}
+
+	// Защита: TP обязан быть выше цены входа
+	if tpPrice <= entryPrice {
+		tpPrice = entryPrice * (1 + s.cfg.TPFallbackPct/100)
+		s.log.Warn("microscalping: tp <= entry, using fallback",
+			zap.String("symbol", symbol),
+			zap.Float64("entry_price", entryPrice),
+			zap.Float64("tp_price", tpPrice),
+		)
 	}
 
 	qty := s.cfg.TradeAmountUSDT / entryPrice

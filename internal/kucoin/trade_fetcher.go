@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,9 +18,8 @@ const (
 	tradeFlushInterval = 500 * time.Millisecond
 )
 
-// TradeFetcher подписывается на WS-стрим /market/match KuCoin для одного символа.
-// Аналог exchange_orders.Fetcher, но для KuCoin aggTrade-сделок.
-// Поддерживает батч-сохранение в БД через WithOnSave и realtime-хук через WithOnTrade.
+// TradeFetcher подписывается на WS-стрим /market/match KuCoin для группы символов
+// на одном WS-соединении. Поддерживает батч-сохранение в БД и realtime-хук.
 type TradeFetcher struct {
 	rest    *RestClient
 	onTrade func(exchange_orders.ExchangeOrder)
@@ -38,14 +38,13 @@ func (f *TradeFetcher) WithOnTrade(fn func(exchange_orders.ExchangeOrder)) {
 }
 
 // WithOnSave устанавливает хук батч-сохранения в БД.
-// Вызывается каждые 500мс или при накоплении 100 сделок.
 func (f *TradeFetcher) WithOnSave(fn func(ctx context.Context, orders []exchange_orders.ExchangeOrder) error) {
 	f.onSave = fn
 }
 
-// Subscribe открывает WS-подписку /market/match:{symbol} с reconnect до ctx.Done().
-func (f *TradeFetcher) Subscribe(ctx context.Context, symbol string) {
-	kcSymbol := toKucoinSymbol(symbol)
+// Subscribe открывает WS-подписку /market/match:{sym1,sym2,...} с reconnect до ctx.Done().
+// id используется только для логирования.
+func (f *TradeFetcher) Subscribe(ctx context.Context, id int, symbols []string) {
 	maxWait := 60 * time.Second
 	wait := time.Second
 
@@ -56,12 +55,12 @@ func (f *TradeFetcher) Subscribe(ctx context.Context, symbol string) {
 		default:
 		}
 
-		if err := f.connect(ctx, symbol, kcSymbol); err != nil {
+		if err := f.connect(ctx, id, symbols); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			f.log.Warn("kucoin trade: reconnecting",
-				zap.String("symbol", symbol),
+				zap.Int("conn_id", id),
 				zap.Duration("wait", wait),
 				zap.Error(err),
 			)
@@ -77,7 +76,7 @@ func (f *TradeFetcher) Subscribe(ctx context.Context, symbol string) {
 	}
 }
 
-func (f *TradeFetcher) connect(ctx context.Context, symbol, kcSymbol string) error {
+func (f *TradeFetcher) connect(ctx context.Context, id int, symbols []string) error {
 	token, wsBaseURL, pingMs, err := f.rest.GetWsToken(ctx)
 	if err != nil {
 		return fmt.Errorf("get ws token: %w", err)
@@ -103,11 +102,17 @@ func (f *TradeFetcher) connect(ctx context.Context, symbol, kcSymbol string) err
 		return fmt.Errorf("expected welcome, got: %s", raw)
 	}
 
-	// Подписываемся на /market/match:{symbol}
+	// Подписываемся на /market/match:SYM1,SYM2,... (один запрос на все символы чанка)
+	kcSymbols := make([]string, len(symbols))
+	for i, s := range symbols {
+		kcSymbols[i] = toKucoinSymbol(s)
+	}
+	topic := "/market/match:" + strings.Join(kcSymbols, ",")
+
 	subMsg := map[string]interface{}{
 		"id":             newConnectID(),
 		"type":           "subscribe",
-		"topic":          "/market/match:" + kcSymbol,
+		"topic":          topic,
 		"privateChannel": false,
 		"response":       true,
 	}
@@ -127,10 +132,17 @@ func (f *TradeFetcher) connect(ctx context.Context, symbol, kcSymbol string) err
 		return fmt.Errorf("unmarshal ack: %w", err)
 	}
 	if ack.Type != "ack" {
-		f.log.Warn("kucoin trade: unexpected ack type", zap.String("type", ack.Type), zap.String("symbol", symbol))
+		f.log.Warn("kucoin trade: unexpected ack type",
+			zap.String("type", ack.Type),
+			zap.Int("conn_id", id),
+		)
 	}
 
-	f.log.Info("kucoin trade: subscribed", zap.String("symbol", symbol))
+	f.log.Info("kucoin trade: subscribed",
+		zap.Int("conn_id", id),
+		zap.Int("symbols", len(symbols)),
+		zap.Strings("list", symbols),
+	)
 
 	// Пинг-горутина
 	pingCtx, pingCancel := context.WithCancel(ctx)
@@ -155,10 +167,10 @@ func (f *TradeFetcher) connect(ctx context.Context, symbol, kcSymbol string) err
 		}
 	}()
 
-	return f.readLoop(ctx, conn, symbol)
+	return f.readLoop(ctx, conn, id)
 }
 
-func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbol string) error {
+func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, id int) error {
 	buf := make([]exchange_orders.ExchangeOrder, 0, tradeFlushSize)
 	flushTicker := time.NewTicker(tradeFlushInterval)
 	defer flushTicker.Stop()
@@ -170,7 +182,7 @@ func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbo
 		}
 		if err := f.onSave(ctx, buf); err != nil {
 			f.log.Warn("kucoin trade: save batch failed",
-				zap.String("symbol", symbol),
+				zap.Int("conn_id", id),
 				zap.Int("count", len(buf)),
 				zap.Error(err),
 			)
@@ -178,7 +190,6 @@ func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbo
 		buf = buf[:0]
 	}
 
-	// Читаем в отдельной горутине чтобы не блокировать ticker
 	msgs := make(chan []byte, 256)
 	go func() {
 		defer close(msgs)
@@ -191,7 +202,7 @@ func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbo
 			select {
 			case msgs <- raw:
 			default:
-				f.log.Warn("kucoin trade: msg buffer full, dropping", zap.String("symbol", symbol))
+				f.log.Warn("kucoin trade: msg buffer full, dropping", zap.Int("conn_id", id))
 			}
 		}
 	}()
@@ -207,7 +218,7 @@ func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbo
 				flush()
 				return fmt.Errorf("ws connection closed")
 			}
-			order := f.parseOrder(raw, symbol)
+			order := f.parseOrder(raw)
 			if order == nil {
 				continue
 			}
@@ -227,9 +238,9 @@ func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbo
 	}
 }
 
-// parseOrder парсит WS-сообщение KuCoin /market/match и возвращает ExchangeOrder.
-// Возвращает nil если сообщение не является торговым событием.
-func (f *TradeFetcher) parseOrder(raw []byte, symbol string) *exchange_orders.ExchangeOrder {
+// parseOrder парсит WS-сообщение KuCoin /market/match.
+// Символ извлекается из поля data.symbol (KuCoin-формат → внутренний).
+func (f *TradeFetcher) parseOrder(raw []byte) *exchange_orders.ExchangeOrder {
 	var msg WsMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return nil
@@ -239,6 +250,7 @@ func (f *TradeFetcher) parseOrder(raw []byte, symbol string) *exchange_orders.Ex
 	}
 
 	var data struct {
+		Symbol  string `json:"symbol"`  // KuCoin-формат: "BTC-USDT"
 		Side    string `json:"side"`    // "buy" | "sell" — taker side
 		Price   string `json:"price"`
 		Size    string `json:"size"`
@@ -257,7 +269,7 @@ func (f *TradeFetcher) parseOrder(raw []byte, symbol string) *exchange_orders.Ex
 
 	return &exchange_orders.ExchangeOrder{
 		Exchange:  "kucoin",
-		Symbol:    symbol,
+		Symbol:    fromKucoinSymbol(data.Symbol),
 		Price:     data.Price,
 		Quantity:  data.Size,
 		Side:      data.Side,

@@ -8,15 +8,18 @@ import (
 	"go.uber.org/zap"
 )
 
-// TradeService управляет WS-подписками на сделки KuCoin (/market/match) для набора символов.
-// Аналог exchange_orders.Service, но для KuCoin.
-// Предоставляет поток торговых событий для microscalping CVD/whale метрик.
+// TradeService управляет батчевыми WS-подписками на сделки KuCoin (/market/match).
+// Все символы одного чанка (до MaxSymbolsPerConn) обслуживаются одним WS-соединением,
+// что снижает количество одновременных соединений.
 type TradeService struct {
 	fetcher *TradeFetcher
 	log     *zap.Logger
+
 	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
+	cancel  context.CancelFunc
+	wg      *sync.WaitGroup
 	rootCtx context.Context
+	symbols []string
 }
 
 // NewTradeService создаёт TradeService.
@@ -24,7 +27,7 @@ func NewTradeService(rest *RestClient, log *zap.Logger) *TradeService {
 	return &TradeService{
 		fetcher: NewTradeFetcher(rest, log),
 		log:     log,
-		cancels: make(map[string]context.CancelFunc),
+		wg:      &sync.WaitGroup{},
 	}
 }
 
@@ -35,7 +38,7 @@ func (s *TradeService) WithOnTrade(fn func(exchange_orders.ExchangeOrder)) {
 }
 
 // WithOnSave устанавливает хук батч-сохранения сделок в БД.
-// Вызывается каждые 500мс или при накоплении 100 сделок. Должен быть вызван до Start().
+// Должен быть вызван до Start().
 func (s *TradeService) WithOnSave(fn func(ctx context.Context, orders []exchange_orders.ExchangeOrder) error) {
 	s.fetcher.WithOnSave(fn)
 }
@@ -43,45 +46,70 @@ func (s *TradeService) WithOnSave(fn func(ctx context.Context, orders []exchange
 // Start запускает подписки для начального списка символов.
 func (s *TradeService) Start(ctx context.Context, symbols []string) {
 	s.rootCtx = ctx
-	for _, sym := range symbols {
-		s.startSymbol(sym)
-	}
-	s.log.Info("kucoin trade: started subscriptions", zap.Int("symbols", len(symbols)), zap.Strings("list", symbols))
+	s.restart(symbols)
 }
 
-// OnSymbolsChanged реагирует на изменение топ-листа: запускает новые и останавливает выбывшие.
+// OnSymbolsChanged реагирует на изменение топ-листа: пересчитывает список и перезапускает соединения.
 func (s *TradeService) OnSymbolsChanged(added, removed []string) {
+	s.mu.Lock()
+	current := make(map[string]struct{}, len(s.symbols))
+	for _, sym := range s.symbols {
+		current[sym] = struct{}{}
+	}
 	for _, sym := range removed {
-		s.stopSymbol(sym)
+		delete(current, sym)
 	}
 	for _, sym := range added {
-		s.startSymbol(sym)
+		current[sym] = struct{}{}
 	}
+	newSymbols := make([]string, 0, len(current))
+	for sym := range current {
+		newSymbols = append(newSymbols, sym)
+	}
+	s.mu.Unlock()
+
+	s.restart(newSymbols)
 }
 
-func (s *TradeService) startSymbol(symbol string) {
+// restart останавливает текущие соединения и запускает новые батчи.
+func (s *TradeService) restart(symbols []string) {
 	s.mu.Lock()
-	if _, exists := s.cancels[symbol]; exists {
+	oldCancel := s.cancel
+	oldWg := s.wg
+	s.mu.Unlock()
+
+	// Останавливаем предыдущие соединения
+	if oldCancel != nil {
+		oldCancel()
+		oldWg.Wait()
+	}
+
+	s.mu.Lock()
+	s.symbols = symbols
+	if len(symbols) == 0 {
+		s.cancel = nil
+		s.wg = &sync.WaitGroup{}
 		s.mu.Unlock()
+		s.log.Info("kucoin trade: no symbols, connections stopped")
 		return
 	}
 	ctx, cancel := context.WithCancel(s.rootCtx)
-	s.cancels[symbol] = cancel
+	wg := &sync.WaitGroup{}
+	s.cancel = cancel
+	s.wg = wg
 	s.mu.Unlock()
 
-	s.log.Info("kucoin trade: subscribing", zap.String("symbol", symbol))
-	go s.fetcher.Subscribe(ctx, symbol)
-}
+	chunks := ChunkSymbols(symbols, MaxSymbolsPerConn)
+	s.log.Info("kucoin trade: starting connections",
+		zap.Int("symbols", len(symbols)),
+		zap.Int("connections", len(chunks)),
+	)
 
-func (s *TradeService) stopSymbol(symbol string) {
-	s.mu.Lock()
-	cancel, ok := s.cancels[symbol]
-	if ok {
-		delete(s.cancels, symbol)
-	}
-	s.mu.Unlock()
-	if ok {
-		cancel()
-		s.log.Info("kucoin trade: unsubscribed", zap.String("symbol", symbol))
+	for i, chunk := range chunks {
+		wg.Add(1)
+		go func(id int, syms []string) {
+			defer wg.Done()
+			s.fetcher.Subscribe(ctx, id, syms)
+		}(i, chunk)
 	}
 }
