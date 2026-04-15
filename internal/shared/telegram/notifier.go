@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -54,14 +55,17 @@ func New(token, chatID string, log *zap.Logger) *Notifier {
 // newHTTPClient создаёт http.Client с прокси из TELEGRAM_PROXY_URL (если задан).
 // Поддерживает socks5, socks5h и http схемы.
 func newHTTPClient(log *zap.Logger) *http.Client {
-	proxyURL := os.Getenv("TELEGRAM_PROXY_URL")
+	proxyURL := strings.TrimSpace(os.Getenv("TELEGRAM_PROXY_URL"))
 	if proxyURL == "" {
 		return &http.Client{Timeout: 30 * time.Second}
 	}
 
 	parsed, err := url.Parse(proxyURL)
-	if err != nil {
-		log.Warn("telegram: invalid TELEGRAM_PROXY_URL, using direct connection", zap.Error(err))
+	if err != nil || parsed.Host == "" {
+		log.Warn("telegram: invalid TELEGRAM_PROXY_URL, using direct connection",
+			zap.String("value", proxyURL),
+			zap.Error(err),
+		)
 		return &http.Client{Timeout: 30 * time.Second}
 	}
 
