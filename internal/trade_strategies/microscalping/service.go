@@ -259,8 +259,9 @@ func (s *Service) checkSignalForSymbol(symbol string, lastBuyQty float64) {
 		zap.Float64("ask0_qty", ask0Qty),
 	)
 
+	// Входим по ask0Price — фактическая цена исполнения taker-покупки
 	tpPrice := s.calcTP(ob, midPrice, ask0Price, avgVol1min)
-	s.tryEnter(symbol, midPrice, tpPrice, obi, cvd5s)
+	s.tryEnter(symbol, ask0Price, tpPrice, obi, cvd5s)
 }
 
 // calcOBI1pct вычисляет OBI по объёмам в диапазоне ±1% от mid-price (базовая валюта).
@@ -294,7 +295,7 @@ func (s *Service) calcOBI1pct(ob *orderbook.OrderBook, midPrice float64) float64
 // Если стена не найдена — fallback: ask0 * (1 + TPFallbackPct%).
 func (s *Service) calcTP(ob *orderbook.OrderBook, midPrice, ask0Price, avgVol1min float64) float64 {
 	wallThreshold := s.cfg.WallMult * avgVol1min
-	upper := midPrice * 1.01
+	upper := midPrice * (1 + s.cfg.TPRangePct/100)
 
 	if wallThreshold > 0 {
 		for _, e := range ob.Asks {
@@ -402,7 +403,7 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 		Qty:        qty,
 		OBI:        obi,
 		OpenedAt:   time.Now(),
-		PriceCh:    make(chan float64, 64),
+		PriceCh:    make(chan float64, 512),
 		CrashCh:    make(chan struct{}, 1),
 	}
 	s.tracker.Add(t)
@@ -451,9 +452,10 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 }
 
 // watchTrade мониторит открытую сделку:
-// - TP по resistance wall / fallback
+// - TP по resistance wall / fallback (пересчитывается каждые TPCheckIntervalSec)
 // - SL жёсткий -StopLossPct%
-// - Динамический выход при ослаблении CVD_5s (каждые CVDCheckIntervalMs мс)
+// - Trailing stop: активируется при росте на TrailActivationPct%, трейлит с шагом TrailPct%
+// - Динамический выход при ослаблении CVD_5s (не раньше MinHoldSec с момента входа)
 // - Crash-событие от detector
 // - Timeout MaxHoldSec
 func (s *Service) watchTrade(t *MicroscalpingTrade) {
@@ -463,7 +465,11 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 	cvdCheck := time.NewTicker(time.Duration(s.cfg.CVDCheckIntervalMs) * time.Millisecond)
 	defer cvdCheck.Stop()
 
+	tpCheck := time.NewTicker(time.Duration(s.cfg.TPCheckIntervalSec) * time.Second)
+	defer tpCheck.Stop()
+
 	hardSL := t.EntryPrice * (1 - s.cfg.StopLossPct/100)
+	t.HighestPrice = t.EntryPrice
 
 	s.log.Info("microscalping: watching trade",
 		zap.Int64("id", t.ID),
@@ -473,6 +479,8 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 		zap.Float64("hard_sl", hardSL),
 		zap.Float64("obi_at_entry", t.OBI),
 		zap.Int("max_hold_sec", s.cfg.MaxHoldSec),
+		zap.Float64("trail_activation_pct", s.cfg.TrailActivationPct),
+		zap.Float64("trail_pct", s.cfg.TrailPct),
 	)
 
 	lastPrice := t.EntryPrice
@@ -502,7 +510,10 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 			return
 
 		case <-cvdCheck.C:
-			// Динамический выход: CVD ослаб до среднего или стал отрицательным
+			// Грейс-период: не выходим по CVD в первые MinHoldSec секунд
+			if time.Since(t.OpenedAt) < time.Duration(s.cfg.MinHoldSec)*time.Second {
+				continue
+			}
 			m := s.getOrCreateMetrics(t.Symbol)
 			cvd := m.CVD5s()
 			avgCVD := m.AvgCVD1h()
@@ -513,14 +524,65 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 					zap.Float64("cvd_5s", cvd),
 					zap.Float64("avg_cvd_1h", avgCVD),
 					zap.Float64("last_price", lastPrice),
+					zap.Int("hold_sec", int(time.Since(t.OpenedAt).Seconds())),
 				)
 				s.closeTrade(t, lastPrice, "cvd_weak")
 				return
 			}
 
+		case <-tpCheck.C:
+			// Динамический пересчёт TP по актуальному стакану
+			newTP := s.recalcTP(t.Symbol, t.EntryPrice, t.TPPrice)
+			if newTP != t.TPPrice {
+				s.log.Info("microscalping: TP recalculated",
+					zap.Int64("id", t.ID),
+					zap.String("symbol", t.Symbol),
+					zap.Float64("old_tp", t.TPPrice),
+					zap.Float64("new_tp", newTP),
+				)
+				t.TPPrice = newTP
+			}
+
 		case price := <-t.PriceCh:
 			lastPrice = price
 
+			// Обновляем максимум
+			if price > t.HighestPrice {
+				t.HighestPrice = price
+			}
+
+			// Trailing stop: активируем когда цена поднялась на TrailActivationPct%
+			trailActivationLevel := t.EntryPrice * (1 + s.cfg.TrailActivationPct/100)
+			if price >= trailActivationLevel {
+				newTrailSL := t.HighestPrice * (1 - s.cfg.TrailPct/100)
+				if !t.TrailActive {
+					t.TrailActive = true
+					t.TrailSL = newTrailSL
+					s.log.Info("microscalping: trailing stop activated",
+						zap.Int64("id", t.ID),
+						zap.String("symbol", t.Symbol),
+						zap.Float64("price", price),
+						zap.Float64("trail_sl", t.TrailSL),
+					)
+				} else if newTrailSL > t.TrailSL {
+					t.TrailSL = newTrailSL
+				}
+			}
+
+			// Проверка trailing SL
+			if t.TrailActive && price <= t.TrailSL {
+				s.log.Info("microscalping: trailing SL hit",
+					zap.Int64("id", t.ID),
+					zap.String("symbol", t.Symbol),
+					zap.Float64("price", price),
+					zap.Float64("trail_sl", t.TrailSL),
+					zap.Float64("highest", t.HighestPrice),
+				)
+				s.closeTrade(t, price, "trail_sl")
+				return
+			}
+
+			// Жёсткий SL
 			if price <= hardSL {
 				s.log.Warn("microscalping: hard SL hit",
 					zap.Int64("id", t.ID),
@@ -532,6 +594,7 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 				return
 			}
 
+			// TP
 			if t.TPPrice > 0 && price >= t.TPPrice {
 				s.log.Info("microscalping: TP hit",
 					zap.Int64("id", t.ID),
@@ -544,6 +607,31 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 			}
 		}
 	}
+}
+
+// recalcTP пересчитывает TP по актуальному стакану.
+// Если новая стена не найдена или находится ниже цены входа — возвращает currentTP без изменений.
+func (s *Service) recalcTP(symbol string, entryPrice, currentTP float64) float64 {
+	ob, ok := s.bookSvc.GetBook(symbol)
+	if !ok || len(ob.Asks) == 0 || len(ob.Bids) == 0 {
+		return currentTP
+	}
+	ask0Price, err := strconv.ParseFloat(ob.Asks[0].Price, 64)
+	if err != nil || ask0Price <= 0 {
+		return currentTP
+	}
+	bid0Price, err := strconv.ParseFloat(ob.Bids[0].Price, 64)
+	if err != nil || bid0Price <= 0 {
+		return currentTP
+	}
+	midPrice := (bid0Price + ask0Price) / 2
+	avgVol1min := s.getOrCreateMetrics(symbol).AvgTradeVol1min()
+
+	newTP := s.calcTP(ob, midPrice, ask0Price, avgVol1min)
+	if newTP <= entryPrice {
+		return currentTP
+	}
+	return newTP
 }
 
 // closeTrade закрывает сделку и логирует результат.
