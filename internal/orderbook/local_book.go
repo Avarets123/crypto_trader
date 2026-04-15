@@ -85,7 +85,7 @@ func applyEntries(m map[string]string, rows [][]json.RawMessage) {
 // Snapshot возвращает отсортированный снимок стакана.
 // Bids — по убыванию цены, Asks — по возрастанию.
 func (lb *LocalBook) Snapshot(log *zap.Logger,symbol string) OrderBook {
-	defer utils.TimeTracker(log, "Snapshot local_book", true)()
+	defer utils.TimeTracker(log, "Snapshot local_book")()
 
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()

@@ -3,6 +3,7 @@ package notifications
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/osman/bot-traider/internal/trade"
 )
@@ -77,6 +78,20 @@ func formatChangePct(pct float64) string {
 
 func formatQty(q float64) string {
 	return fmt.Sprintf("%.8g", q)
+}
+
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dч %dм %dс", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dм %dс", m, s)
+	}
+	return fmt.Sprintf("%dс", s)
 }
 
 func formatPnl(pnl float64) string {

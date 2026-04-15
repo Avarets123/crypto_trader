@@ -52,6 +52,7 @@ func formatTradeOpenMsg(t *trade.Trade) string {
 	fmt.Fprintf(&sb, "Биржа:    %s [%s]\n", t.TradeExchange, t.Mode)
 	fmt.Fprintf(&sb, "Цена входа: <b>%s</b>\n", FormatPrice(t.EntryPrice))
 	fmt.Fprintf(&sb, "Количество: %s\n", formatQty(t.Qty))
+	fmt.Fprintf(&sb, "Сумма:      <b>%.2f USDT</b>\n", t.EntryPrice*t.Qty)
 	if t.TargetPrice != nil {
 		fmt.Fprintf(&sb, "Цель (TP): %s\n", FormatPrice(*t.TargetPrice))
 	}
@@ -66,15 +67,28 @@ func formatTradeCloseMsg(t *trade.Trade) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s <b>Сделка закрыта — %s</b>\n", emoji, reason)
 	fmt.Fprintf(&sb, "Стратегия: %s\n", strategyLabel(t.Strategy))
-	fmt.Fprintf(&sb, "Символ:   <b>%s</b>\n", t.Symbol)
-	fmt.Fprintf(&sb, "Биржа:    %s [%s]\n", t.TradeExchange, t.Mode)
+	fmt.Fprintf(&sb, "Символ:    <b>%s</b>\n", t.Symbol)
+	fmt.Fprintf(&sb, "Биржа:     %s [%s]\n", t.TradeExchange, t.Mode)
+	fmt.Fprintf(&sb, "Открыта:   %s\n", t.OpenedAt.Format("15:04:05"))
+	if t.ClosedAt != nil {
+		fmt.Fprintf(&sb, "Удержание: %s\n", formatDuration(t.ClosedAt.Sub(t.OpenedAt)))
+	}
 	fmt.Fprintf(&sb, "Вход → Выход: %s → %s\n", FormatPrice(t.EntryPrice), exitPrice(t))
 	fmt.Fprintf(&sb, "Количество: %s\n", formatQty(t.Qty))
 	if t.CommissionUSDT != nil {
 		fmt.Fprintf(&sb, "Комиссия: %s USDT\n", FormatPrice(*t.CommissionUSDT))
 	}
 	if t.PnlUSDT != nil {
-		fmt.Fprintf(&sb, "PnL: <b>%s USDT</b>\n", formatPnl(*t.PnlUSDT))
+		fmt.Fprintf(&sb, "PnL: <b>%s USDT</b>", formatPnl(*t.PnlUSDT))
+		invested := t.EntryPrice * t.Qty
+		if invested > 0 {
+			pnlPct := *t.PnlUSDT / invested * 100
+			fmt.Fprintf(&sb, " (<b>%s%%</b>)", formatChangePct(pnlPct))
+		}
+		sb.WriteString("\n")
+	}
+	if t.ExitOrderID != "" {
+		fmt.Fprintf(&sb, "Order ID:  <code>%s</code>\n", t.ExitOrderID)
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
