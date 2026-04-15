@@ -1,4 +1,4 @@
-package volatile
+package microscalping
 
 import (
 	"context"
@@ -33,20 +33,20 @@ type Service struct {
 	log         *zap.Logger
 }
 
-// New создаёт и запускает Service если VOLATILE_ENABLED=true.
+// New создаёт и запускает Service если MICROSCALPING_ENABLED=true.
 func New(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.TickerService, bookSvc *orderbook.Service, symbols []string, log *zap.Logger) *Service {
 	cfg := LoadConfig()
 	if !cfg.Enabled {
-		log.Info("volatile strategy disabled (VOLATILE_ENABLED=false)")
+		log.Info("microscalping strategy disabled (MICROSCALPING_ENABLED=false)")
 		return nil
 	}
 
-	svc := NewService(ctx, cfg, tradeSvc, bookSvc, log.With(zap.String("component", "volatile")))
+	svc := NewService(ctx, cfg, tradeSvc, bookSvc, log.With(zap.String("component", "microscalping")))
 	svc.SetSymbols(symbols)
 	tickerService.WithOnSend(svc.OnTicker)
 	go svc.Start(ctx)
 
-	log.Info("volatile (micro-scalping) strategy enabled",
+	log.Info("microscalping strategy enabled",
 		zap.String("exchange", cfg.Exchange),
 		zap.Float64("obi_min", cfg.OBIMin),
 		zap.Float64("spread_max_pct", cfg.SpreadMaxPct),
@@ -59,7 +59,7 @@ func New(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.Tic
 
 // NewService создаёт Service без запуска.
 func NewService(ctx context.Context, cfg Config, tradeSvc *trade.Service, bookSvc *orderbook.Service, log *zap.Logger) *Service {
-	log.Info("volatile strategy initialized",
+	log.Info("microscalping strategy initialized",
 		zap.String("exchange", cfg.Exchange),
 		zap.Float64("obi_min", cfg.OBIMin),
 		zap.Float64("spread_max_pct", cfg.SpreadMaxPct),
@@ -101,7 +101,7 @@ func (s *Service) SetSymbols(symbols []string) {
 
 // OnSymbolsChanged реагирует на изменение топ-листа.
 func (s *Service) OnSymbolsChanged(added, removed []string) {
-	defer utils.TimeTracker(s.log, "OnSymbolsChanged volatile service")()
+	defer utils.TimeTracker(s.log, "OnSymbolsChanged microscalping service")()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,7 +132,7 @@ func (s *Service) OnSymbolsChanged(added, removed []string) {
 // OnTrade вызывается при каждой входящей сделке с биржи.
 // Обновляет метрики символа и при taker buy проверяет условия входа.
 func (s *Service) OnTrade(order exchange_orders.ExchangeOrder) {
-	defer utils.TimeTracker(s.log, "OnTrade volatile service")()
+	defer utils.TimeTracker(s.log, "OnTrade microscalping service")()
 
 	if order.Exchange != s.cfg.Exchange {
 		return
@@ -168,7 +168,7 @@ func (s *Service) getOrCreateMetrics(symbol string) *SymbolMetrics {
 func (s *Service) Start(ctx context.Context) {
 	warmup := time.Duration(s.cfg.WarmupSec) * time.Second
 	s.warmupUntil = time.Now().Add(warmup)
-	s.log.Info("volatile: warmup period started",
+	s.log.Info("microscalping: warmup period started",
 		zap.Duration("duration", warmup),
 		zap.Time("ready_at", s.warmupUntil),
 	)
@@ -178,7 +178,7 @@ func (s *Service) Start(ctx context.Context) {
 // checkSignalForSymbol проверяет 4 условия микроскальпинг входа для символа.
 // Вызывается событийно при каждой taker buy сделке.
 func (s *Service) checkSignalForSymbol(symbol string, lastBuyQty float64) {
-	defer utils.TimeTracker(s.log, "checkSignalForSymbol volatile service")()
+	defer utils.TimeTracker(s.log, "checkSignalForSymbol microscalping service")()
 
 	if time.Now().Before(s.warmupUntil) {
 		return
@@ -218,7 +218,7 @@ func (s *Service) checkSignalForSymbol(symbol string, lastBuyQty float64) {
 	midPrice := (bid0Price + ask0Price) / 2
 	obi := s.calcOBI1pct(ob, midPrice)
 	if obi <= s.cfg.OBIMin {
-		s.log.Debug("volatile: OBI filter failed",
+		s.log.Debug("microscalping: OBI filter failed",
 			zap.String("symbol", symbol),
 			zap.Float64("obi", obi),
 			zap.Float64("min", s.cfg.OBIMin),
@@ -230,7 +230,7 @@ func (s *Service) checkSignalForSymbol(symbol string, lastBuyQty float64) {
 	cvd5s := m.CVD5s()
 	threshold := m.CVDThreshold()
 	if cvd5s <= threshold {
-		s.log.Debug("volatile: CVD filter failed",
+		s.log.Debug("microscalping: CVD filter failed",
 			zap.String("symbol", symbol),
 			zap.Float64("cvd_5s", cvd5s),
 			zap.Float64("threshold", threshold),
@@ -241,7 +241,7 @@ func (s *Service) checkSignalForSymbol(symbol string, lastBuyQty float64) {
 	// --- Условие 4: спред < SpreadMaxPct ---
 	spread := (ask0Price - bid0Price) / bid0Price
 	if spread >= s.cfg.SpreadMaxPct {
-		s.log.Debug("volatile: spread filter failed",
+		s.log.Debug("microscalping: spread filter failed",
 			zap.String("symbol", symbol),
 			zap.Float64("spread", spread),
 			zap.Float64("max", s.cfg.SpreadMaxPct),
@@ -249,7 +249,7 @@ func (s *Service) checkSignalForSymbol(symbol string, lastBuyQty float64) {
 		return
 	}
 
-	s.log.Info("volatile: all conditions met, attempting entry",
+	s.log.Info("microscalping: all conditions met, attempting entry",
 		zap.String("symbol", symbol),
 		zap.Float64("obi_1pct", obi),
 		zap.Float64("cvd_5s", cvd5s),
@@ -307,7 +307,7 @@ func (s *Service) calcTP(ob *orderbook.OrderBook, midPrice, ask0Price, avgVol1mi
 			}
 			q, _ := strconv.ParseFloat(e.Qty, 64)
 			if q >= wallThreshold {
-				s.log.Debug("volatile: resistance wall found",
+				s.log.Debug("microscalping: resistance wall found",
 					zap.Float64("wall_price", p),
 					zap.Float64("wall_qty", q),
 					zap.Float64("threshold", wallThreshold),
@@ -329,7 +329,7 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 		if time.Since(last) < cooldownDur {
 			remaining := cooldownDur - time.Since(last)
 			s.mu.Unlock()
-			s.log.Debug("volatile: cooldown active",
+			s.log.Debug("microscalping: cooldown active",
 				zap.String("symbol", symbol),
 				zap.Duration("remaining", remaining),
 			)
@@ -345,7 +345,7 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 
 	// 3. Лимит позиций
 	if s.tracker.Count() >= s.cfg.MaxPositions {
-		s.log.Warn("volatile: max positions limit reached",
+		s.log.Warn("microscalping: max positions limit reached",
 			zap.Int("current", s.tracker.Count()),
 			zap.Int("max", s.cfg.MaxPositions),
 		)
@@ -361,7 +361,7 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 		return
 	}
 
-	s.log.Info("volatile: opening trade",
+	s.log.Info("microscalping: opening trade",
 		zap.String("symbol", symbol),
 		zap.String("exchange", s.cfg.Exchange),
 		zap.Float64("entry_price", entryPrice),
@@ -373,14 +373,14 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 	)
 
 	id, err := s.tradeSvc.OpenTrade(s.ctx, trade.Trade{
-		Strategy:      "volatile",
+		Strategy:      "microscalping",
 		TradeExchange: s.cfg.Exchange,
 		Symbol:        symbol,
 		Qty:           qty,
 		EntryPrice:    entryPrice,
 	})
 	if err != nil {
-		s.log.Error("volatile: open trade failed",
+		s.log.Error("microscalping: open trade failed",
 			zap.String("symbol", symbol),
 			zap.Error(err),
 		)
@@ -390,7 +390,7 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 		return
 	}
 
-	t := &VolatileTrade{
+	t := &MicroscalpingTrade{
 		ID:         id,
 		Symbol:     symbol,
 		Exchange:   s.cfg.Exchange,
@@ -416,7 +416,7 @@ func (s *Service) OnCrashEvent(event *detector.DetectorEvent) {
 	if !ok || event.Exchange != t.Exchange {
 		return
 	}
-	s.log.Warn("volatile: crash signal received, closing",
+	s.log.Warn("microscalping: crash signal received, closing",
 		zap.String("symbol", event.Symbol),
 		zap.Float64("change_pct", event.ChangePct),
 	)
@@ -428,7 +428,7 @@ func (s *Service) OnCrashEvent(event *detector.DetectorEvent) {
 
 // OnTicker получает тикеры и передаёт цену в горутины активных сделок.
 func (s *Service) OnTicker(t ticker.Ticker) {
-	defer utils.TimeTracker(s.log, "OnTicker volatile service")()
+	defer utils.TimeTracker(s.log, "OnTicker microscalping service")()
 
 	tr, ok := s.tracker.Get(t.Symbol)
 	if !ok || t.Exchange != tr.Exchange {
@@ -441,7 +441,7 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 	select {
 	case tr.PriceCh <- price:
 	default:
-		s.log.Warn("volatile: price channel full, tick dropped",
+		s.log.Warn("microscalping: price channel full, tick dropped",
 			zap.String("symbol", t.Symbol),
 		)
 	}
@@ -453,7 +453,7 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 // - Динамический выход при ослаблении CVD_5s (каждые CVDCheckIntervalMs мс)
 // - Crash-событие от detector
 // - Timeout MaxHoldSec
-func (s *Service) watchTrade(t *VolatileTrade) {
+func (s *Service) watchTrade(t *MicroscalpingTrade) {
 	timeout := time.NewTimer(time.Duration(s.cfg.MaxHoldSec) * time.Second)
 	defer timeout.Stop()
 
@@ -462,7 +462,7 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 
 	hardSL := t.EntryPrice * (1 - s.cfg.StopLossPct/100)
 
-	s.log.Info("volatile: watching trade",
+	s.log.Info("microscalping: watching trade",
 		zap.Int64("id", t.ID),
 		zap.String("symbol", t.Symbol),
 		zap.Float64("entry_price", t.EntryPrice),
@@ -480,7 +480,7 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 			return
 
 		case <-timeout.C:
-			s.log.Warn("volatile: timeout, force closing",
+			s.log.Warn("microscalping: timeout, force closing",
 				zap.Int64("id", t.ID),
 				zap.String("symbol", t.Symbol),
 				zap.Float64("last_price", lastPrice),
@@ -490,7 +490,7 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 			return
 
 		case <-t.CrashCh:
-			s.log.Warn("volatile: crash exit",
+			s.log.Warn("microscalping: crash exit",
 				zap.Int64("id", t.ID),
 				zap.String("symbol", t.Symbol),
 				zap.Float64("last_price", lastPrice),
@@ -504,7 +504,7 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 			cvd := m.CVD5s()
 			avgCVD := m.AvgCVD1h()
 			if cvd <= avgCVD || cvd < 0 {
-				s.log.Info("volatile: CVD weakened, closing",
+				s.log.Info("microscalping: CVD weakened, closing",
 					zap.Int64("id", t.ID),
 					zap.String("symbol", t.Symbol),
 					zap.Float64("cvd_5s", cvd),
@@ -519,7 +519,7 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 			lastPrice = price
 
 			if price <= hardSL {
-				s.log.Warn("volatile: hard SL hit",
+				s.log.Warn("microscalping: hard SL hit",
 					zap.Int64("id", t.ID),
 					zap.String("symbol", t.Symbol),
 					zap.Float64("price", price),
@@ -530,7 +530,7 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 			}
 
 			if t.TPPrice > 0 && price >= t.TPPrice {
-				s.log.Info("volatile: TP hit",
+				s.log.Info("microscalping: TP hit",
 					zap.Int64("id", t.ID),
 					zap.String("symbol", t.Symbol),
 					zap.Float64("price", price),
@@ -544,14 +544,14 @@ func (s *Service) watchTrade(t *VolatileTrade) {
 }
 
 // closeTrade закрывает сделку и логирует результат.
-func (s *Service) closeTrade(t *VolatileTrade, exitPrice float64, reason string) {
-	defer utils.TimeTracker(s.log, "closeTrade volatile service")()
+func (s *Service) closeTrade(t *MicroscalpingTrade, exitPrice float64, reason string) {
+	defer utils.TimeTracker(s.log, "closeTrade microscalping service")()
 
 	defer s.tracker.Remove(t.Symbol)
 
 	err := s.tradeSvc.CloseTrade(s.ctx, t.ID, exitPrice, reason)
 	if err != nil {
-		s.log.Error("volatile: close trade failed",
+		s.log.Error("microscalping: close trade failed",
 			zap.Int64("id", t.ID),
 			zap.String("symbol", t.Symbol),
 			zap.String("reason", reason),
@@ -561,7 +561,7 @@ func (s *Service) closeTrade(t *VolatileTrade, exitPrice float64, reason string)
 	}
 
 	pnl := (exitPrice - t.EntryPrice) * t.Qty
-	s.log.Info("volatile: trade closed",
+	s.log.Info("microscalping: trade closed",
 		zap.Int64("id", t.ID),
 		zap.String("symbol", t.Symbol),
 		zap.String("reason", reason),

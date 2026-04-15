@@ -27,7 +27,7 @@ import (
 	"github.com/osman/bot-traider/internal/ticker"
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
-	"github.com/osman/bot-traider/internal/trade_strategies/volatile"
+	"github.com/osman/bot-traider/internal/trade_strategies/microscalping"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -123,13 +123,32 @@ func main() {
 	} else {
 		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
 	}
+		// --- Ticker сервис ---
+	repo := ticker.NewRepository(pool, log)
+	tickerService := ticker.NewService(ctx, repo, log, ticker.LoadConfig())
+	tradeRepo := trade.NewRepo(pool, log.With(zap.String("component", "trade-repo")))
 
 	// Объявляем переменные заранее — хук захватит их по ссылке.
 	// Сами сервисы создаются позже, после инициализации tickerService.
 	var binanceTickerClient *binance.Client
 	var kucoinTickerClient *kucoin.Client
-	var volatileSvc *volatile.Service
-	var tradeSvc *trade.Service
+
+
+
+	restClients := map[string]exchange.RestClient{
+		"binance": binanceRest,
+	}
+
+		tradeSvc := trade.NewService(
+		cfg.DevMode,
+		tradeRepo,
+		restClients,
+		log.With(zap.String("component", "order-manager")),
+	)
+
+
+	// --- Microscalping стратегия (событийный вход по taker buy) ---
+	microscalpingSvc := microscalping.New(ctx, tradeSvc, tickerService, obSvc, []string{"BTCUSDT", "ETHUSDT"}, log)
 
 	// notifyExchanges отправляет обновлённый список символов биржевым клиентам.
 	// К топ-10 добираются символы с открытыми позициями — чтобы не потерять тикеры
@@ -154,8 +173,8 @@ func main() {
 		if alertSvc != nil {
 			alertSvc.OnSymbolsChanged(ctx, added, removed)
 		}
-		if volatileSvc != nil {
-			volatileSvc.OnSymbolsChanged(added, removed)
+		if microscalpingSvc != nil {
+			microscalpingSvc.OnSymbolsChanged(added, removed)
 		}
 		notifyExchanges()
 	})
@@ -183,22 +202,6 @@ func main() {
 		}))
 		log.Info("telegram error notifications enabled", zap.Int("thread_id", errorsThreadID))
 	}
-
-	// --- Ticker сервис ---
-	repo := ticker.NewRepository(pool, log)
-	tickerService := ticker.NewService(ctx, repo, log, ticker.LoadConfig())
-	tradeRepo := trade.NewRepo(pool, log.With(zap.String("component", "trade-repo")))
-
-	restClients := map[string]exchange.RestClient{
-		"binance": binanceRest,
-	}
-
-	tradeSvc = trade.NewService(
-		cfg.DevMode,
-		tradeRepo,
-		restClients,
-		log.With(zap.String("component", "order-manager")),
-	)
 
 	// --- Redis + персистентность открытых позиций ---
 	redisCfg := redisclient.LoadConfig()
@@ -230,18 +233,16 @@ func main() {
 	notifications.NewPositionMonitor(ctx, tradeSvc, tickerService, tgNotifier, tradesThreadID, log)
 
 
-	// --- Volatile стратегия (микроскальпинг, событийный вход по taker buy) ---
-	volatileSvc = volatile.New(ctx, tradeSvc, tickerService, obSvc, []string{"BTCUSDT", "ETHUSDT"}, log)
 
-	// Подключаем fan-out trade-хука: tradeAgg (для alerts) + volatile (для CVD/whale метрик).
-	// Wiring после создания volatileSvc чтобы передать корректный указатель.
+	// Подключаем fan-out trade-хука: tradeAgg (для alerts) + microscalping (для CVD/whale метрик).
+	// Wiring после создания microscalpingSvc чтобы передать корректный указатель.
 	if eoFetcher != nil {
 		eoFetcher.WithOnTrade(func(o exchange_orders.ExchangeOrder) {
 			if tradeAgg != nil {
 				tradeAgg.OnTrade(o)
 			}
-			if volatileSvc != nil {
-				volatileSvc.OnTrade(o)
+			if microscalpingSvc != nil {
+				microscalpingSvc.OnTrade(o)
 			}
 		})
 	}

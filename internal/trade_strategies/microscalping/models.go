@@ -1,9 +1,9 @@
-package volatile
+package microscalping
 
 import "time"
 
-// VolatileTrade описывает одну открытую сделку микроскальпинг стратегии.
-type VolatileTrade struct {
+// MicroscalpingTrade описывает одну открытую сделку микроскальпинг стратегии.
+type MicroscalpingTrade struct {
 	ID         int64
 	Symbol     string
 	Exchange   string

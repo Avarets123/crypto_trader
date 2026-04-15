@@ -1,29 +1,29 @@
-package volatile
+package microscalping
 
 import "sync"
 
 // TradeTracker — потокобезопасное хранилище активных сделок.
 type TradeTracker struct {
 	mu     sync.Mutex
-	trades map[string]*VolatileTrade // symbol → сделка
+	trades map[string]*MicroscalpingTrade // symbol → сделка
 }
 
 // NewTradeTracker создаёт TradeTracker.
 func NewTradeTracker() *TradeTracker {
 	return &TradeTracker{
-		trades: make(map[string]*VolatileTrade),
+		trades: make(map[string]*MicroscalpingTrade),
 	}
 }
 
 // Add добавляет сделку.
-func (t *TradeTracker) Add(trade *VolatileTrade) {
+func (t *TradeTracker) Add(trade *MicroscalpingTrade) {
 	t.mu.Lock()
 	t.trades[trade.Symbol] = trade
 	t.mu.Unlock()
 }
 
 // Get возвращает сделку по символу.
-func (t *TradeTracker) Get(symbol string) (*VolatileTrade, bool) {
+func (t *TradeTracker) Get(symbol string) (*MicroscalpingTrade, bool) {
 	t.mu.Lock()
 	trade, ok := t.trades[symbol]
 	t.mu.Unlock()

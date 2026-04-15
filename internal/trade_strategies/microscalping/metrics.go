@@ -1,4 +1,4 @@
-package volatile
+package microscalping
 
 import (
 	"math"
@@ -46,7 +46,7 @@ func newSymbolMetrics(log *zap.Logger) *SymbolMetrics {
 
 // OnTrade регистрирует новую сделку и записывает снимок CVD_5s в историю.
 func (m *SymbolMetrics) OnTrade(qty float64, isBuy bool) {
-	defer utils.TimeTracker(m.log, "OnTrade volatile")()
+	defer utils.TimeTracker(m.log, "OnTrade microscalping")()
 	now := time.Now()
 	cutoff := now.Add(-cvdHistory1h)
 
@@ -83,7 +83,7 @@ func (m *SymbolMetrics) OnTrade(qty float64, isBuy bool) {
 
 // CVD5s возвращает кумулятивную дельту объёма за последние 5 секунд.
 func (m *SymbolMetrics) CVD5s() float64 {
-	defer utils.TimeTracker(m.log, "CDV5S volatile")()
+	defer utils.TimeTracker(m.log, "CDV5S microscalping")()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -111,7 +111,7 @@ func (m *SymbolMetrics) calcCVD5sLocked(now time.Time) float64 {
 
 // AvgTradeVol1min возвращает средний объём сделки в базовой валюте за последнюю минуту.
 func (m *SymbolMetrics) AvgTradeVol1min() float64 {
-	defer utils.TimeTracker(m.log, "AvgTradeVol1min volatile")()
+	defer utils.TimeTracker(m.log, "AvgTradeVol1min microscalping")()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -134,7 +134,7 @@ func (m *SymbolMetrics) AvgTradeVol1min() float64 {
 
 // CVDStats возвращает среднее и стандартное отклонение CVD_5s за последний час.
 func (m *SymbolMetrics) CVDStats() (avg, std float64) {
-	defer utils.TimeTracker(m.log, "CVDStats volatile")()
+	defer utils.TimeTracker(m.log, "CVDStats microscalping")()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -159,7 +159,6 @@ func (m *SymbolMetrics) CVDStats() (avg, std float64) {
 
 // CVDThreshold возвращает avg_CVD_1h + 2*std_CVD_1h — порог аномального CVD_5s.
 func (m *SymbolMetrics) CVDThreshold() float64 {
-	
 	avg, std := m.CVDStats()
 	return avg + 2*std
 }
