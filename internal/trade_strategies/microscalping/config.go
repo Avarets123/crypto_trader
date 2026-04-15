@@ -4,9 +4,10 @@ import sharedconfig "github.com/osman/bot-traider/internal/shared/config"
 
 // Config хранит параметры микроскальпинг стратегии.
 type Config struct {
-	Enabled            bool    // MICROSCALPING_ENABLED=false
-	Exchange           string  // MICROSCALPING_EXCHANGE=binance
-	OBIMin             float64 // MICROSCALPING_OBI_MIN=0.6; мин. OBI_1pct для входа
+	Enabled            bool     // MICROSCALPING_ENABLED=false
+	Exchanges          []string // MICROSCALPING_EXCHANGES=binance,kucoin; если не задан — MICROSCALPING_EXCHANGE=binance
+	Exchange           string   // заполняется в New() для каждого Service
+	OBIMin             float64  // MICROSCALPING_OBI_MIN=0.6; мин. OBI_1pct для входа
 	SpreadMaxPct       float64 // MICROSCALPING_SPREAD_MAX_PCT=0.0005; макс. спред (0.05%)
 	TPFallbackPct      float64 // MICROSCALPING_TP_FALLBACK_PCT=0.4; TP если стена не найдена (% от ask0)
 	TPRangePct         float64 // MICROSCALPING_TP_RANGE_PCT=2.5; диапазон поиска стены TP (% от mid-price)
@@ -28,9 +29,16 @@ type Config struct {
 
 // LoadConfig читает конфиг из переменных окружения.
 func LoadConfig() Config {
+	// MICROSCALPING_EXCHANGES имеет приоритет; fallback на MICROSCALPING_EXCHANGE для совместимости.
+	exchanges := sharedconfig.GetEnvStringSlice("MICROSCALPING_EXCHANGES")
+	if len(exchanges) == 0 {
+		if ex := sharedconfig.GetEnv("MICROSCALPING_EXCHANGE", "binance"); ex != "" {
+			exchanges = []string{ex}
+		}
+	}
 	return Config{
 		Enabled:            sharedconfig.GetEnvBool("MICROSCALPING_ENABLED", false),
-		Exchange:           sharedconfig.GetEnv("MICROSCALPING_EXCHANGE", "binance"),
+		Exchanges:          exchanges,
 		OBIMin:             sharedconfig.GetEnvFloat("MICROSCALPING_OBI_MIN", 0.6),
 		SpreadMaxPct:       sharedconfig.GetEnvFloat("MICROSCALPING_SPREAD_MAX_PCT", 0.0005),
 		TPFallbackPct:      sharedconfig.GetEnvFloat("MICROSCALPING_TP_FALLBACK_PCT", 0.4),

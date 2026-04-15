@@ -132,6 +132,8 @@ func main() {
 	// Сами сервисы создаются позже, после инициализации tickerService.
 	var binanceTickerClient *binance.Client
 	var kucoinTickerClient *kucoin.Client
+	var kucoinTopProvider *kucoin.TopVolatileProvider
+	var kucoinTradeSvc *kucoin.TradeService
 
 
 
@@ -162,22 +164,26 @@ func main() {
 
 
 	// --- Microscalping стратегия (событийный вход по taker buy) ---
-	microscalpingSvc := microscalping.New(ctx, tradeSvc, tickerService, obSvc, topProvider.Symbols(), log)
+	// Символы Binance передаются сразу; символы KuCoin — через SetExchangeSymbols после инициализации KuCoin.
+	microscalpingSvc := microscalping.New(ctx, tradeSvc, tickerService, obSvc, map[string][]string{
+		"binance": topProvider.Symbols(),
+	}, log)
 
 	// notifyExchanges отправляет обновлённый список символов биржевым клиентам.
-	// К топ-10 добираются символы с открытыми позициями — чтобы не потерять тикеры
-	// по валютам, которые выпали из топа пока по ним есть активная сделка.
+	// Каждая биржа получает свой список символов (топ + открытые позиции), без пересечений.
 	notifyExchanges := func() {
-		all := trade.MergeSymbols(topProvider.Symbols(), trade.OpenTradeSymbols(tradeSvc))
+		openSymbols := trade.OpenTradeSymbols(tradeSvc)
 		if binanceTickerClient != nil {
+			all := trade.MergeSymbols(topProvider.Symbols(), openSymbols)
 			binanceTickerClient.NotifySymbolsChanged(all)
 		}
-		if kucoinTickerClient != nil {
+		if kucoinTickerClient != nil && kucoinTopProvider != nil {
+			all := trade.MergeSymbols(kucoinTopProvider.Symbols(), openSymbols)
 			kucoinTickerClient.NotifySymbolsChanged(all)
 		}
 	}
 
-	// Подписываемся на изменения топ-листа: обновляем стаканы, подписки exchange_orders и тикеры.
+	// Подписываемся на изменения топ-листа Binance: обновляем стаканы, exchange_orders, алерты, тикеры.
 	// Хук регистрируется после создания всех зависимых сервисов.
 	topProvider.WithOnSymbolsChanged(func(added, removed []string) {
 		obSvc.OnSymbolsChanged(added, removed)
@@ -188,7 +194,7 @@ func main() {
 			alertSvc.OnSymbolsChanged(ctx, added, removed)
 		}
 		if microscalpingSvc != nil {
-			microscalpingSvc.OnSymbolsChanged(added, removed)
+			microscalpingSvc.OnExchangeSymbolsChanged("binance", added, removed)
 		}
 		notifyExchanges()
 	})
@@ -307,16 +313,51 @@ func main() {
 			log.Info("kucoin: market data only (no API keys)")
 		}
 
+		// Собственный провайдер топ-волатильных символов KuCoin.
+		// Исключает символы Binance, чтобы списки не пересекались.
+		kucoinTopProvider = kucoin.NewTopVolatileProvider(
+			kucoinRest,
+			10,
+			log.With(zap.String("component", "kucoin-top-volatile")),
+		)
+		kucoinTopProvider.WithExcludeFunc(topProvider.Symbols)
+		if err := kucoinTopProvider.Fetch(ctx); err != nil {
+			log.Warn("kucoin top volatile: initial fetch failed", zap.Error(err))
+		} else {
+			log.Info("kucoin top volatile: loaded", zap.Strings("symbols", kucoinTopProvider.Symbols()))
+		}
+		go kucoinTopProvider.Run(ctx, time.Duration(alertCfg.RefreshIntervalMin)*time.Minute)
+
+		// Передаём символы KuCoin в microscalping (если стратегия включена для kucoin)
+		if microscalpingSvc != nil {
+			microscalpingSvc.SetExchangeSymbols("kucoin", kucoinTopProvider.Symbols())
+		}
+
+		// Trade-стрим KuCoin: CVD/whale сигналы для microscalping (/market/match)
+		kucoinTradeSvc = kucoin.NewTradeService(kucoinRest, log.With(zap.String("component", "kucoin-trade")))
+		kucoinTradeSvc.WithOnTrade(func(o exchange_orders.ExchangeOrder) {
+			if microscalpingSvc != nil {
+				microscalpingSvc.OnTrade(o)
+			}
+		})
+		kucoinTradeSvc.Start(ctx, kucoinTopProvider.Symbols())
+
+		// При изменении топ-листа KuCoin — обновляем microscalping, trade-стримы и тикеры
+		kucoinTopProvider.WithOnSymbolsChanged(func(added, removed []string) {
+			if microscalpingSvc != nil {
+				microscalpingSvc.OnExchangeSymbolsChanged("kucoin", added, removed)
+			}
+			kucoinTradeSvc.OnSymbolsChanged(added, removed)
+			notifyExchanges()
+		})
+
 		// Топ-10 волатильных KuCoin в Telegram
 		go sendTopVolatileKucoin(ctx, log, kucoinRest, tgNotifier)
 
 		// WS клиент для рыночных данных
 		log.Info("starting kucoin")
 		kucoinTickerClient = kucoin.NewClient(kucoinCfg, log.With(zap.String("market", "kucoin")), st, tickerService)
-		kucoinTickerClient.WithSymbolFetcher(func(ctx context.Context) ([]string, error) {
-			// Используем те же топ-символы что и Binance
-			return topProvider.Symbols(), nil
-		})
+		kucoinTickerClient.WithSymbolFetcher(kucoinTopProvider.FetchSymbols)
 		go func() {
 			if err := kucoinTickerClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Error("kucoin client stopped", zap.Error(err))

@@ -39,20 +39,21 @@ type SnapshotWrapper struct {
 }
 
 // SnapshotData — данные из топика /market/snapshot:{symbol}.
+// Ценовые поля объявлены как FlexString: KuCoin иногда присылает их как JSON-число вместо строки.
 type SnapshotData struct {
-	Symbol          string `json:"symbol"`
-	High            string `json:"high"`
-	Low             string `json:"low"`
-	Vol             string `json:"vol"`      // объём в базовой валюте
-	VolValue        string `json:"volValue"` // объём в USDT
-	LastTradedPrice string `json:"lastTradedPrice"`
-	ChangePrice     string `json:"changePrice"` // абсолютное изменение цены за 24ч
-	ChangeRate      string `json:"changeRate"`  // относительное изменение, десятичное (напр. -0.05 = -5%)
-	Close           string `json:"close"`
-	Buy             string `json:"buy"`  // лучший bid
-	Sell            string `json:"sell"` // лучший ask
-	Datetime        int64  `json:"datetime"`
-	Trading         bool   `json:"trading"`
+	Symbol          string     `json:"symbol"`
+	High            FlexString `json:"high"`
+	Low             FlexString `json:"low"`
+	Vol             FlexString `json:"vol"`      // объём в базовой валюте
+	VolValue        FlexString `json:"volValue"` // объём в USDT
+	LastTradedPrice FlexString `json:"lastTradedPrice"`
+	ChangePrice     FlexString `json:"changePrice"` // абсолютное изменение цены за 24ч
+	ChangeRate      FlexString `json:"changeRate"`  // относительное изменение, десятичное (напр. -0.05 = -5%)
+	Close           FlexString `json:"close"`
+	Buy             FlexString `json:"buy"`  // лучший bid
+	Sell            FlexString `json:"sell"` // лучший ask
+	Datetime        int64      `json:"datetime"`
+	Trading         bool       `json:"trading"`
 }
 
 // KuCoin REST API generic response.

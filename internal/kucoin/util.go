@@ -6,12 +6,41 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// FlexString десериализует JSON-поле как строку независимо от того,
+// пришло ли оно в виде JSON-строки ("0.082") или JSON-числа (0.082).
+// KuCoin иногда присылает price/qty поля как числа вместо строк.
+type FlexString string
+
+func (f *FlexString) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*f = ""
+		return nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		*f = FlexString(s)
+		return nil
+	}
+	// JSON-число — берём как есть
+	*f = FlexString(data)
+	return nil
+}
+
+// String возвращает строковое значение.
+func (f FlexString) String() string {
+	return string(f)
+}
 
 // sign вычисляет HMAC-SHA256 и возвращает base64-строку.
 // Используется для KC-API-SIGN и KC-API-PASSPHRASE (версия 2).

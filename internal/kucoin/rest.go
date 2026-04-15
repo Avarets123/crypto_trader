@@ -78,6 +78,39 @@ func (c *RestClient) HasAPIKeys() bool {
 	return c.apiKey != ""
 }
 
+// GetWsToken получает публичный WS токен, адрес сервера и интервал пинга.
+// Используется TradeFetcher и Connection для установки WS-соединений.
+func (c *RestClient) GetWsToken(ctx context.Context) (token, wsURL string, pingIntervalMs int, err error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.baseURL+"/api/v1/bullet-public", nil)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("build ws token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("ws token request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result WsTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", 0, fmt.Errorf("decode ws token response: %w", err)
+	}
+	if result.Code != "200000" {
+		return "", "", 0, fmt.Errorf("kucoin ws token api error: code %s", result.Code)
+	}
+	if len(result.Data.InstanceServers) == 0 {
+		return "", "", 0, fmt.Errorf("no ws instance servers in token response")
+	}
+
+	srv := result.Data.InstanceServers[0]
+	return result.Data.Token, srv.Endpoint, srv.PingInterval, nil
+}
+
 // GetAccounts возвращает список торговых счетов (GET /api/v1/accounts).
 func (c *RestClient) GetAccounts(ctx context.Context) ([]AccountBalance, error) {
 	resp, err := c.doSigned(ctx, http.MethodGet, "/api/v1/accounts?type=trade", nil)

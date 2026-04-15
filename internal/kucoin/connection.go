@@ -271,9 +271,9 @@ func (c *Connection) handleMarketMessage(msg WsMessage, raw []byte) {
 		return
 	}
 
-	price := snap.LastTradedPrice
+	price := string(snap.LastTradedPrice)
 	if price == "" {
-		price = snap.Close
+		price = string(snap.Close)
 	}
 
 	// Дедупликация — пропускаем если цена не изменилась
@@ -283,8 +283,8 @@ func (c *Connection) handleMarketMessage(msg WsMessage, raw []byte) {
 	}
 	c.lastPrice[internalSymbol] = price
 
-	open := calcOpen(price, snap.ChangePrice)
-	changePct := calcChangePctFromRate(snap.ChangeRate)
+	open := calcOpen(price, string(snap.ChangePrice))
+	changePct := calcChangePctFromRate(string(snap.ChangeRate))
 	quote := quoteFromKucoinSymbol(snap.Symbol)
 
 	c.stats.Record("kucoin", len(raw))
@@ -294,9 +294,9 @@ func (c *Connection) handleMarketMessage(msg WsMessage, raw []byte) {
 		Quote:     quote,
 		Price:     price,
 		Open24h:   open,
-		High24h:   snap.High,
-		Low24h:    snap.Low,
-		Volume24h: snap.Vol,
+		High24h:   string(snap.High),
+		Low24h:    string(snap.Low),
+		Volume24h: string(snap.Vol),
 		ChangePct: changePct,
 		CreatedAt: time.Now(),
 	})

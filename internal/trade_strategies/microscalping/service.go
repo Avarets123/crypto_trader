@@ -33,28 +33,45 @@ type Service struct {
 	log         *zap.Logger
 }
 
-// New создаёт и запускает Service если MICROSCALPING_ENABLED=true.
-func New(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.TickerService, bookSvc *orderbook.Service, symbols []string, log *zap.Logger) *Service {
+// New создаёт и запускает MultiService если MICROSCALPING_ENABLED=true.
+// initialSymbols — начальные списки символов, ключ — имя биржи (например "binance", "kucoin").
+// Для каждой биржи из cfg.Exchanges создаётся отдельный Service.
+func New(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.TickerService, bookSvc *orderbook.Service, initialSymbols map[string][]string, log *zap.Logger) *MultiService {
 	cfg := LoadConfig()
 	if !cfg.Enabled {
 		log.Info("microscalping strategy disabled (MICROSCALPING_ENABLED=false)")
 		return nil
 	}
+	if len(cfg.Exchanges) == 0 {
+		log.Warn("microscalping: no exchanges configured (MICROSCALPING_EXCHANGES is empty)")
+		return nil
+	}
 
-	svc := NewService(ctx, cfg, tradeSvc, bookSvc, log.With(zap.String("component", "microscalping")))
-	svc.SetSymbols(symbols)
-	tickerService.WithOnSend(svc.OnTicker)
-	go svc.Start(ctx)
+	byExchange := make(map[string]*Service, len(cfg.Exchanges))
+	for _, exchange := range cfg.Exchanges {
+		perCfg := cfg
+		perCfg.Exchange = exchange
+		svcLog := log.With(zap.String("component", "microscalping"), zap.String("exchange", exchange))
+		svc := NewService(ctx, perCfg, tradeSvc, bookSvc, svcLog)
+		if syms, ok := initialSymbols[exchange]; ok {
+			svc.SetSymbols(syms)
+		}
+		go svc.Start(ctx)
+		byExchange[exchange] = svc
+	}
+
+	multi := newMultiService(byExchange)
+	tickerService.WithOnSend(multi.OnTicker)
 
 	log.Info("microscalping strategy enabled",
-		zap.String("exchange", cfg.Exchange),
+		zap.Strings("exchanges", cfg.Exchanges),
 		zap.Float64("obi_min", cfg.OBIMin),
 		zap.Float64("spread_max_pct", cfg.SpreadMaxPct),
 		zap.Float64("stop_loss_pct", cfg.StopLossPct),
 		zap.Float64("tp_fallback_pct", cfg.TPFallbackPct),
 		zap.Int("warmup_sec", cfg.WarmupSec),
 	)
-	return svc
+	return multi
 }
 
 // NewService создаёт Service без запуска.
