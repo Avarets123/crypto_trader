@@ -28,10 +28,16 @@ func NewTradeService(rest *RestClient, log *zap.Logger) *TradeService {
 	}
 }
 
-// WithOnTrade устанавливает хук, вызываемый при каждой входящей сделке.
+// WithOnTrade устанавливает realtime-хук, вызываемый при каждой входящей сделке.
 // Должен быть вызван до Start().
 func (s *TradeService) WithOnTrade(fn func(exchange_orders.ExchangeOrder)) {
 	s.fetcher.WithOnTrade(fn)
+}
+
+// WithOnSave устанавливает хук батч-сохранения сделок в БД.
+// Вызывается каждые 500мс или при накоплении 100 сделок. Должен быть вызван до Start().
+func (s *TradeService) WithOnSave(fn func(ctx context.Context, orders []exchange_orders.ExchangeOrder) error) {
+	s.fetcher.WithOnSave(fn)
 }
 
 // Start запускает подписки для начального списка символов.

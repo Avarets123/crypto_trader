@@ -63,6 +63,31 @@ func (lb *LocalBook) Apply(finalID int64, bids, asks [][]json.RawMessage) {
 	lb.lastUpdateID = finalID
 }
 
+// ApplyPairs применяет инкрементальное обновление из пар [price, qty].
+// Используется для KuCoin, где изменения приходят как [][3]string{price, qty, seq}.
+func (lb *LocalBook) ApplyPairs(finalID int64, bids, asks [][2]string) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	if finalID <= lb.lastUpdateID {
+		return
+	}
+	applyPairEntries(lb.bids, bids)
+	applyPairEntries(lb.asks, asks)
+	lb.lastUpdateID = finalID
+}
+
+func applyPairEntries(m map[string]string, rows [][2]string) {
+	for _, row := range rows {
+		price, qty := row[0], row[1]
+		f, _ := strconv.ParseFloat(qty, 64)
+		if f == 0 {
+			delete(m, price)
+		} else {
+			m[price] = qty
+		}
+	}
+}
+
 // applyEntries применяет список изменений к map price→qty.
 // Если qty == 0 — уровень удаляется.
 func applyEntries(m map[string]string, rows [][]json.RawMessage) {

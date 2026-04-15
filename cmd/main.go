@@ -101,11 +101,13 @@ func main() {
 
 	// --- Exchange Orders ---
 	// tradeAgg и eoFetcher объявлены здесь, wiring trade-хуков выполняется после создания volatile.
+	// eoRepo вынесен наружу — используется и для KuCoin (сохранение сделок в БД).
 	var tradeAgg *exchange_orders.TradeAggregator
 	var eoSvc *exchange_orders.Service
 	var eoFetcher *exchange_orders.Fetcher
+	var eoRepo *exchange_orders.Repository
 	if sharedconfig.GetEnvBool("EXCHANGE_ORDERS_ENABLED", false) {
-		eoRepo := exchange_orders.NewRepository(pool, log.With(zap.String("component", "exchange-orders")))
+		eoRepo = exchange_orders.NewRepository(pool, log.With(zap.String("component", "exchange-orders")))
 		eoRepo.WithOnSaved(st.RecordExchangeOrders)
 		eoFetcher = exchange_orders.NewFetcher(
 			"binance",
@@ -134,6 +136,7 @@ func main() {
 	var kucoinTickerClient *kucoin.Client
 	var kucoinTopProvider *kucoin.TopVolatileProvider
 	var kucoinTradeSvc *kucoin.TradeService
+	var kucoinObSvc *kucoin.OrderBookService
 
 
 
@@ -333,17 +336,28 @@ func main() {
 			microscalpingSvc.SetExchangeSymbols("kucoin", kucoinTopProvider.Symbols())
 		}
 
-		// Trade-стрим KuCoin: CVD/whale сигналы для microscalping (/market/match)
+		// Стаканы KuCoin: пишем в общий obStore → obSvc.GetBook() работает для KuCoin-символов
+		kucoinObSvc = kucoin.NewOrderBookService(kucoinRest, obStore, log.With(zap.String("component", "kucoin-orderbook")))
+		kucoinObSvc.Init(ctx, kucoinTopProvider.Symbols())
+
+		// Trade-стрим KuCoin: CVD/whale сигналы (microscalping) + запись в БД + TradeAggregator
 		kucoinTradeSvc = kucoin.NewTradeService(kucoinRest, log.With(zap.String("component", "kucoin-trade")))
 		kucoinTradeSvc.WithOnTrade(func(o exchange_orders.ExchangeOrder) {
+			if tradeAgg != nil {
+				tradeAgg.OnTrade(o)
+			}
 			if microscalpingSvc != nil {
 				microscalpingSvc.OnTrade(o)
 			}
 		})
+		if eoRepo != nil {
+			kucoinTradeSvc.WithOnSave(eoRepo.SaveBatch)
+		}
 		kucoinTradeSvc.Start(ctx, kucoinTopProvider.Symbols())
 
-		// При изменении топ-листа KuCoin — обновляем microscalping, trade-стримы и тикеры
+		// При изменении топ-листа KuCoin — обновляем стаканы, microscalping, trade-стримы и тикеры
 		kucoinTopProvider.WithOnSymbolsChanged(func(added, removed []string) {
+			kucoinObSvc.OnSymbolsChanged(added, removed)
 			if microscalpingSvc != nil {
 				microscalpingSvc.OnExchangeSymbolsChanged("kucoin", added, removed)
 			}

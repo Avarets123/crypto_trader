@@ -12,12 +12,18 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	tradeFlushSize     = 100
+	tradeFlushInterval = 500 * time.Millisecond
+)
+
 // TradeFetcher подписывается на WS-стрим /market/match KuCoin для одного символа.
 // Аналог exchange_orders.Fetcher, но для KuCoin aggTrade-сделок.
-// Используется TradeService для получения CVD/whale сигналов в microscalping.
+// Поддерживает батч-сохранение в БД через WithOnSave и realtime-хук через WithOnTrade.
 type TradeFetcher struct {
 	rest    *RestClient
 	onTrade func(exchange_orders.ExchangeOrder)
+	onSave  func(ctx context.Context, orders []exchange_orders.ExchangeOrder) error
 	log     *zap.Logger
 }
 
@@ -26,13 +32,18 @@ func NewTradeFetcher(rest *RestClient, log *zap.Logger) *TradeFetcher {
 	return &TradeFetcher{rest: rest, log: log}
 }
 
-// WithOnTrade устанавливает хук, вызываемый на каждой входящей сделке.
+// WithOnTrade устанавливает realtime-хук — вызывается на каждой сделке (для microscalping).
 func (f *TradeFetcher) WithOnTrade(fn func(exchange_orders.ExchangeOrder)) {
 	f.onTrade = fn
 }
 
+// WithOnSave устанавливает хук батч-сохранения в БД.
+// Вызывается каждые 500мс или при накоплении 100 сделок.
+func (f *TradeFetcher) WithOnSave(fn func(ctx context.Context, orders []exchange_orders.ExchangeOrder) error) {
+	f.onSave = fn
+}
+
 // Subscribe открывает WS-подписку /market/match:{symbol} с reconnect до ctx.Done().
-// Совместим по сигнатуре с exchange_orders.Fetcher.Subscribe.
 func (f *TradeFetcher) Subscribe(ctx context.Context, symbol string) {
 	kcSymbol := toKucoinSymbol(symbol)
 	maxWait := 60 * time.Second
@@ -148,36 +159,83 @@ func (f *TradeFetcher) connect(ctx context.Context, symbol, kcSymbol string) err
 }
 
 func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, symbol string) error {
+	buf := make([]exchange_orders.ExchangeOrder, 0, tradeFlushSize)
+	flushTicker := time.NewTicker(tradeFlushInterval)
+	defer flushTicker.Stop()
+
+	flush := func() {
+		if len(buf) == 0 || f.onSave == nil {
+			buf = buf[:0]
+			return
+		}
+		if err := f.onSave(ctx, buf); err != nil {
+			f.log.Warn("kucoin trade: save batch failed",
+				zap.String("symbol", symbol),
+				zap.Int("count", len(buf)),
+				zap.Error(err),
+			)
+		}
+		buf = buf[:0]
+	}
+
+	// Читаем в отдельной горутине чтобы не блокировать ticker
+	msgs := make(chan []byte, 256)
+	go func() {
+		defer close(msgs)
+		for {
+			conn.SetReadDeadline(time.Now().Add(60 * time.Second)) //nolint:errcheck
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			select {
+			case msgs <- raw:
+			default:
+				f.log.Warn("kucoin trade: msg buffer full, dropping", zap.String("symbol", symbol))
+			}
+		}
+	}()
+
 	for {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
+			flush()
 			return nil
+
+		case raw, ok := <-msgs:
+			if !ok {
+				flush()
+				return fmt.Errorf("ws connection closed")
+			}
+			order := f.parseOrder(raw, symbol)
+			if order == nil {
+				continue
+			}
+			if f.onTrade != nil {
+				f.onTrade(*order)
+			}
+			if f.onSave != nil {
+				buf = append(buf, *order)
+				if len(buf) >= tradeFlushSize {
+					flush()
+				}
+			}
+
+		case <-flushTicker.C:
+			flush()
 		}
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second)) //nolint:errcheck
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			return fmt.Errorf("read: %w", err)
-		}
-		f.handleMessage(raw, symbol)
 	}
 }
 
-func (f *TradeFetcher) handleMessage(raw []byte, symbol string) {
+// parseOrder парсит WS-сообщение KuCoin /market/match и возвращает ExchangeOrder.
+// Возвращает nil если сообщение не является торговым событием.
+func (f *TradeFetcher) parseOrder(raw []byte, symbol string) *exchange_orders.ExchangeOrder {
 	var msg WsMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
-		return
+		return nil
 	}
-
-	switch msg.Type {
-	case "message":
-		// обрабатываем ниже
-	case "pong", "welcome", "ack":
-		return
-	default:
-		return
-	}
-
-	if msg.Subject != "trade.l3match" {
-		return
+	if msg.Type != "message" || msg.Subject != "trade.l3match" {
+		return nil
 	}
 
 	var data struct {
@@ -189,7 +247,7 @@ func (f *TradeFetcher) handleMessage(raw []byte, symbol string) {
 	}
 	if err := json.Unmarshal(msg.Data, &data); err != nil {
 		f.log.Warn("kucoin trade: unmarshal data failed", zap.Error(err))
-		return
+		return nil
 	}
 
 	tradeTime := time.Now()
@@ -197,14 +255,12 @@ func (f *TradeFetcher) handleMessage(raw []byte, symbol string) {
 		tradeTime = time.Unix(0, ns).UTC()
 	}
 
-	if f.onTrade != nil {
-		f.onTrade(exchange_orders.ExchangeOrder{
-			Exchange:  "kucoin",
-			Symbol:    symbol,
-			Price:     data.Price,
-			Quantity:  data.Size,
-			Side:      data.Side,
-			TradeTime: tradeTime,
-		})
+	return &exchange_orders.ExchangeOrder{
+		Exchange:  "kucoin",
+		Symbol:    symbol,
+		Price:     data.Price,
+		Quantity:  data.Size,
+		Side:      data.Side,
+		TradeTime: tradeTime,
 	}
 }

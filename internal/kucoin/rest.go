@@ -111,6 +111,48 @@ func (c *RestClient) GetWsToken(ctx context.Context) (token, wsURL string, pingI
 	return result.Data.Token, srv.Endpoint, srv.PingInterval, nil
 }
 
+// GetOrderBookSnapshot возвращает снимок стакана (100 уровней) через публичный REST.
+// Возвращает bids/asks как [][2]string{price, qty} и номер sequence для синхронизации WS.
+func (c *RestClient) GetOrderBookSnapshot(ctx context.Context, symbol string) (bids, asks [][2]string, sequence int64, err error) {
+	kcSymbol := toKucoinSymbol(symbol)
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
+		c.baseURL+"/api/v1/market/orderbook/level2_100?symbol="+kcSymbol, nil)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("build depth request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("kucoin get depth: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Code string `json:"code"`
+		Data struct {
+			Sequence string      `json:"sequence"`
+			Bids     [][2]string `json:"bids"`
+			Asks     [][2]string `json:"asks"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, nil, 0, fmt.Errorf("kucoin get depth unmarshal: %w", err)
+	}
+	if result.Code != "200000" {
+		return nil, nil, 0, fmt.Errorf("kucoin get depth: code %s", result.Code)
+	}
+
+	seq, err := strconv.ParseInt(result.Data.Sequence, 10, 64)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("kucoin get depth parse sequence: %w", err)
+	}
+
+	return result.Data.Bids, result.Data.Asks, seq, nil
+}
+
 // GetAccounts возвращает список торговых счетов (GET /api/v1/accounts).
 func (c *RestClient) GetAccounts(ctx context.Context) ([]AccountBalance, error) {
 	resp, err := c.doSigned(ctx, http.MethodGet, "/api/v1/accounts?type=trade", nil)
