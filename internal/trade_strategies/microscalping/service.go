@@ -372,12 +372,15 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 		zap.Float64("qty", qty),
 	)
 
+	slPrice := entryPrice * (1 - s.cfg.StopLossPct/100)
 	id, err := s.tradeSvc.OpenTrade(s.ctx, trade.Trade{
 		Strategy:      "microscalping",
 		TradeExchange: s.cfg.Exchange,
 		Symbol:        symbol,
 		Qty:           qty,
 		EntryPrice:    entryPrice,
+		TargetPrice:   &tpPrice,
+		StopLossPrice: &slPrice,
 	})
 	if err != nil {
 		s.log.Error("microscalping: open trade failed",

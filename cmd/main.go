@@ -139,7 +139,21 @@ func main() {
 		"binance": binanceRest,
 	}
 
-		tradeSvc := trade.NewService(
+	// --- Режим эмуляции (EMULATION_ENABLED=true) ---
+	// Подменяет реальные биржевые клиенты фиктивным — ордера не исполняются,
+	// но вся логика стратегий, хуки и запись в БД работают как обычно.
+	if sharedconfig.GetEnvBool("EMULATION_ENABLED", false) {
+		emulatedBalance := sharedconfig.GetEnvFloat("EMULATION_BALANCE_USDT", 1000)
+		emulatedClient := exchange.NewEmulatedClient(emulatedBalance, log.With(zap.String("component", "emulator")))
+		for k := range restClients {
+			restClients[k] = emulatedClient
+		}
+		log.Warn("EMULATION MODE ENABLED — no real orders will be placed",
+			zap.Float64("balance_usdt", emulatedBalance),
+		)
+	}
+
+	tradeSvc := trade.NewService(
 		cfg.DevMode,
 		tradeRepo,
 		restClients,

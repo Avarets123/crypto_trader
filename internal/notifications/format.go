@@ -26,6 +26,8 @@ func strategyLabel(strategy string) string {
 		return "⚡ Lead-Lag Arb"
 	case "momentum", "pump":
 		return "🚀 Momentum"
+	case "microscalping":
+		return "🌊 Microscalping"
 	default:
 		return strategy
 	}
