@@ -74,15 +74,15 @@ func main() {
 	// Интервал обновления берётся из ORDERBOOK_REFRESH_INTERVAL_MIN (общий с orderbook-alerts).
 	alertCfg := orderbook.LoadAlertsConfig()
 	topProvider := binance.NewTopVolatileProvider(binanceRest, 10, log.With(zap.String("component", "top-volatile")))
+	// Пиннутые символы из EXTRA_SYMBOLS всегда включены в список, даже если не в топ-10
+	if extraSymbols := sharedconfig.GetEnvStringSlice("EXTRA_SYMBOLS"); len(extraSymbols) > 0 {
+		topProvider.WithPinnedSymbols(extraSymbols)
+	}
 	if err := topProvider.Fetch(ctx); err != nil {
 		log.Fatal("top volatile: initial fetch failed", zap.Error(err))
 	}
 
-	go sendTopVolatileBinance(ctx, log, []binance.VolatileTicker{binance.VolatileTicker{
-		Symbol: "BTCUSDT",
-	}, binance.VolatileTicker{
-		Symbol: "ETHUSDT",
-	}}, tgNotifier, obSvc)
+	go sendTopVolatileBinance(ctx, log, topProvider.Tickers(), tgNotifier, obSvc)
 
 	// --- Orderbook Alerts ---
 	var alertSvc *orderbook.AlertService
@@ -94,7 +94,7 @@ func main() {
 			alertCfg,
 			log.With(zap.String("component", "orderbook-alerts")),
 		)
-		alertSvc.SetSymbols([]string{"BTCUSDT", "ETHUSDT"})
+		alertSvc.SetSymbols(topProvider.Symbols())
 	}
 
 	st := stats.New(ctx, log)
@@ -118,7 +118,7 @@ func main() {
 			alertSvc.WithTradeAggregator(tradeAgg)
 		}
 		eoSvc = exchange_orders.NewService(eoFetcher, log.With(zap.String("component", "exchange-orders")))
-		eoSvc.Start(ctx, []string{"BTCUSDT", "ETHUSDT"})
+		eoSvc.Start(ctx, topProvider.Symbols())
 		log.Info("exchange_orders: enabled")
 	} else {
 		log.Info("exchange_orders: disabled (EXCHANGE_ORDERS_ENABLED=false)")
@@ -162,7 +162,7 @@ func main() {
 
 
 	// --- Microscalping стратегия (событийный вход по taker buy) ---
-	microscalpingSvc := microscalping.New(ctx, tradeSvc, tickerService, obSvc, []string{"BTCUSDT", "ETHUSDT"}, log)
+	microscalpingSvc := microscalping.New(ctx, tradeSvc, tickerService, obSvc, topProvider.Symbols(), log)
 
 	// notifyExchanges отправляет обновлённый список символов биржевым клиентам.
 	// К топ-10 добираются символы с открытыми позициями — чтобы не потерять тикеры
