@@ -3,6 +3,7 @@ package microscalping
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,9 +17,13 @@ import (
 	"github.com/osman/bot-traider/internal/trade"
 )
 
-// Service реализует микроскальпинг стратегию:
-// событийный вход при taker buy «съедающей» Ask1 + OBI_1pct + CVD_5s + спред.
-// Выход: TP по стене сопротивления, жёсткий SL, динамический выход при ослаблении CVD.
+// Service реализует микроскальпинг стратегию v2.
+//
+// Лонг-сигнал: Ask-стена поглощается + кит Buy + VolumeCluster выше среднего.
+// Шорт-сигнал: локальный перегрев +2% за 15 мин + новая Ask-стена + CD_1m < 0 + кит Sell + дивергенция объёма.
+// Выход: TP по проценту прибыли при стабильной Ask-стене / wall-SL / trailing-SL / 4-часовой timeout.
+//
+// Короткие позиции (shorts) требуют маржинального или фьючерсного аккаунта на бирже.
 type Service struct {
 	mu          sync.Mutex
 	cfg         Config
@@ -29,13 +34,13 @@ type Service struct {
 	cooldowns   map[string]time.Time
 	symbols     []string
 	metrics     map[string]*SymbolMetrics
+	walls       map[string]*WallTracker
 	warmupUntil time.Time
+	mskLoc      *time.Location
 	log         *zap.Logger
 }
 
 // New создаёт и запускает MultiService если MICROSCALPING_ENABLED=true.
-// initialSymbols — начальные списки символов, ключ — имя биржи (например "binance", "kucoin").
-// Для каждой биржи из cfg.Exchanges создаётся отдельный Service.
 func New(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.TickerService, bookSvc *orderbook.Service, initialSymbols map[string][]string, log *zap.Logger) *MultiService {
 	cfg := LoadConfig()
 	if !cfg.Enabled {
@@ -63,12 +68,14 @@ func New(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.Tic
 	multi := newMultiService(byExchange)
 	tickerService.WithOnSend(multi.OnTicker)
 
-	log.Info("microscalping strategy enabled",
+	log.Info("microscalping v2 strategy enabled",
 		zap.Strings("exchanges", cfg.Exchanges),
-		zap.Float64("obi_min", cfg.OBIMin),
-		zap.Float64("spread_max_pct", cfg.SpreadMaxPct),
-		zap.Float64("stop_loss_pct", cfg.StopLossPct),
-		zap.Float64("tp_fallback_pct", cfg.TPFallbackPct),
+		zap.Float64("whale_mult", cfg.WhaleMult),
+		zap.Float64("wall_anomaly_mult", cfg.WallAnomalyMult),
+		zap.Int("wall_min_age_sec", cfg.WallMinAgeSec),
+		zap.Float64("wall_absorption_pct", cfg.WallAbsorptionPct),
+		zap.Int("max_position_duration_h", cfg.MaxPositionDurationH),
+		zap.Int("no_trade_msk", cfg.NoTradeHourStartMSK),
 		zap.Int("warmup_sec", cfg.WarmupSec),
 	)
 	return multi
@@ -76,18 +83,22 @@ func New(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.Tic
 
 // NewService создаёт Service без запуска.
 func NewService(ctx context.Context, cfg Config, tradeSvc *trade.Service, bookSvc *orderbook.Service, log *zap.Logger) *Service {
-	log.Info("microscalping strategy initialized",
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		log.Warn("microscalping: failed to load Moscow timezone, falling back to UTC", zap.Error(err))
+		loc = time.UTC
+	}
+
+	log.Info("microscalping v2 initialized",
 		zap.String("exchange", cfg.Exchange),
-		zap.Float64("obi_min", cfg.OBIMin),
-		zap.Float64("spread_max_pct", cfg.SpreadMaxPct),
-		zap.Float64("stop_loss_pct", cfg.StopLossPct),
-		zap.Float64("tp_fallback_pct", cfg.TPFallbackPct),
-		zap.Float64("wall_mult", cfg.WallMult),
 		zap.Float64("whale_mult", cfg.WhaleMult),
-		zap.Float64("min_whale_qty", cfg.MinWhaleQty),
-		zap.Int("cvd_check_interval_ms", cfg.CVDCheckIntervalMs),
+		zap.Float64("wall_anomaly_mult", cfg.WallAnomalyMult),
+		zap.Float64("wall_absorption_pct", cfg.WallAbsorptionPct),
+		zap.Float64("stop_loss_pct", cfg.StopLossPct),
+		zap.Float64("tp_pct_btceth", (cfg.TPPctBTCETHMin+cfg.TPPctBTCETHMax)/2),
+		zap.Float64("tp_pct_alt", (cfg.TPPctAltMin+cfg.TPPctAltMax)/2),
+		zap.Int("max_position_h", cfg.MaxPositionDurationH),
 		zap.Int("cooldown_sec", cfg.CooldownSec),
-		zap.Int("max_hold_sec", cfg.MaxHoldSec),
 		zap.Int("max_positions", cfg.MaxPositions),
 		zap.Float64("trade_amount_usdt", cfg.TradeAmountUSDT),
 	)
@@ -99,6 +110,8 @@ func NewService(ctx context.Context, cfg Config, tradeSvc *trade.Service, bookSv
 		tracker:   NewTradeTracker(),
 		cooldowns: make(map[string]time.Time),
 		metrics:   make(map[string]*SymbolMetrics),
+		walls:     make(map[string]*WallTracker),
+		mskLoc:    loc,
 		log:       log,
 	}
 }
@@ -111,7 +124,10 @@ func (s *Service) SetSymbols(symbols []string) {
 	copy(s.symbols, symbols)
 	for _, sym := range s.symbols {
 		if _, ok := s.metrics[sym]; !ok {
-			s.metrics[sym] = newSymbolMetrics(s.log)
+			s.metrics[sym] = newSymbolMetrics()
+		}
+		if _, ok := s.walls[sym]; !ok {
+			s.walls[sym] = newWallTracker(s.log)
 		}
 	}
 }
@@ -128,6 +144,7 @@ func (s *Service) OnSymbolsChanged(added, removed []string) {
 		for _, sym := range removed {
 			removedSet[sym] = struct{}{}
 			delete(s.metrics, sym)
+			delete(s.walls, sym)
 		}
 		filtered := s.symbols[:0]
 		for _, sym := range s.symbols {
@@ -140,14 +157,17 @@ func (s *Service) OnSymbolsChanged(added, removed []string) {
 
 	for _, sym := range added {
 		if _, ok := s.metrics[sym]; !ok {
-			s.metrics[sym] = newSymbolMetrics(s.log)
+			s.metrics[sym] = newSymbolMetrics()
+		}
+		if _, ok := s.walls[sym]; !ok {
+			s.walls[sym] = newWallTracker(s.log)
 		}
 	}
 	s.symbols = append(s.symbols, added...)
 }
 
 // OnTrade вызывается при каждой входящей сделке с биржи.
-// Обновляет метрики символа и при taker buy проверяет условия входа.
+// Обновляет метрики, стены и проверяет условия входа.
 func (s *Service) OnTrade(order exchange_orders.ExchangeOrder) {
 	defer utils.TimeTracker(s.log, "OnTrade microscalping service")()
 
@@ -158,14 +178,28 @@ func (s *Service) OnTrade(order exchange_orders.ExchangeOrder) {
 	if err != nil || qty <= 0 {
 		return
 	}
+	price, err := strconv.ParseFloat(order.Price, 64)
+	if err != nil || price <= 0 {
+		return
+	}
 	isBuy := order.Side == "buy"
+	tradeUSDT := qty * price
 
 	m := s.getOrCreateMetrics(order.Symbol)
-	m.OnTrade(qty, isBuy)
+	m.OnTrade(qty, price, isBuy)
 
-	// Проверяем сигнал только на taker buy
+	ob, ok := s.bookSvc.GetBook(order.Symbol)
+	if !ok || len(ob.Asks) == 0 || len(ob.Bids) == 0 {
+		return
+	}
+
+	wt := s.getOrCreateWallTracker(order.Symbol)
+	wt.Update(ob, s.cfg.WallAnomalyMult)
+
 	if isBuy {
-		s.checkSignalForSymbol(order.Symbol, qty)
+		s.checkLongSignal(order.Symbol, tradeUSDT, ob, m, wt)
+	} else {
+		s.checkShortSignal(order.Symbol, tradeUSDT, ob, m, wt)
 	}
 }
 
@@ -174,11 +208,23 @@ func (s *Service) getOrCreateMetrics(symbol string) *SymbolMetrics {
 	s.mu.Lock()
 	m, ok := s.metrics[symbol]
 	if !ok {
-		m = newSymbolMetrics(s.log)
+		m = newSymbolMetrics()
 		s.metrics[symbol] = m
 	}
 	s.mu.Unlock()
 	return m
+}
+
+// getOrCreateWallTracker возвращает или создаёт WallTracker для символа.
+func (s *Service) getOrCreateWallTracker(symbol string) *WallTracker {
+	s.mu.Lock()
+	wt, ok := s.walls[symbol]
+	if !ok {
+		wt = newWallTracker(s.log)
+		s.walls[symbol] = wt
+	}
+	s.mu.Unlock()
+	return wt
 }
 
 // Start инициализирует период прогрева и блокирует до ctx.Done().
@@ -192,181 +238,247 @@ func (s *Service) Start(ctx context.Context) {
 	<-ctx.Done()
 }
 
-// checkSignalForSymbol проверяет 4 условия микроскальпинг входа для символа.
-// Вызывается событийно при каждой taker buy сделке.
-func (s *Service) checkSignalForSymbol(symbol string, lastBuyQty float64) {
-	defer utils.TimeTracker(s.log, "checkSignalForSymbol microscalping service")()
+// isNoTradeWindow возвращает true если сейчас запрещённое окно по времени МСК.
+// Запрет: NoTradeHourStartMSK..NoTradeHourEndMSK (по умолчанию 03:00–10:00 МСК).
+func (s *Service) isNoTradeWindow() bool {
+	h := time.Now().In(s.mskLoc).Hour()
+	return h >= s.cfg.NoTradeHourStartMSK && h < s.cfg.NoTradeHourEndMSK
+}
+
+// symbolType возвращает тип символа: "btc", "eth" или "alt".
+func symbolType(symbol string) string {
+	upper := strings.ToUpper(symbol)
+	if strings.HasPrefix(upper, "BTC") {
+		return "btc"
+	}
+	if strings.HasPrefix(upper, "ETH") {
+		return "eth"
+	}
+	return "alt"
+}
+
+// whaleThresholdUSDT вычисляет порог «кита» в USDT для символа.
+// Берётся максимум из динамического (avg * WhaleMult) и абсолютного порога.
+func (s *Service) whaleThresholdUSDT(symbol string, avgTradeSizeUSDT float64) float64 {
+	dynamic := avgTradeSizeUSDT * s.cfg.WhaleMult
+	var absolute float64
+	switch symbolType(symbol) {
+	case "btc":
+		absolute = s.cfg.WhaleBTCAbsUSD
+	case "eth":
+		absolute = s.cfg.WhaleETHAbsUSD
+	default:
+		absolute = s.cfg.WhaleAltAbsUSD
+	}
+	if dynamic > absolute {
+		return dynamic
+	}
+	return absolute
+}
+
+// isWhale возвращает true если сделка является «китовой».
+// Критерии: объём > порога WhaleMult*avg ИЛИ > абсолютного порога ИЛИ съедает > WhaleOrderbookPct% уровня.
+func (s *Service) isWhale(symbol string, tradeUSDT, avgTradeSizeUSDT float64, ob *orderbook.OrderBook) bool {
+	threshold := s.whaleThresholdUSDT(symbol, avgTradeSizeUSDT)
+	if tradeUSDT >= threshold {
+		return true
+	}
+	// Дополнительно: сделка съела > WhaleOrderbookPct% уровня стакана
+	if ob != nil && len(ob.Asks) > 0 {
+		askPrice, _ := strconv.ParseFloat(ob.Asks[0].Price, 64)
+		askQty, _ := strconv.ParseFloat(ob.Asks[0].Qty, 64)
+		if askPrice > 0 && askQty > 0 {
+			tradeQty := tradeUSDT / askPrice
+			if tradeQty/askQty*100 >= s.cfg.WhaleOrderbookPct {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// calcTPPrice рассчитывает целевую цену TP в зависимости от типа символа.
+// Использует середину диапазона TPPctMin..TPPctMax.
+func (s *Service) calcTPPrice(symbol string, entryPrice float64, isShort bool) (tpPrice, tpPct float64) {
+	var minPct, maxPct float64
+	switch symbolType(symbol) {
+	case "btc", "eth":
+		minPct, maxPct = s.cfg.TPPctBTCETHMin, s.cfg.TPPctBTCETHMax
+	default:
+		minPct, maxPct = s.cfg.TPPctAltMin, s.cfg.TPPctAltMax
+	}
+	midPct := (minPct + maxPct) / 2
+	if isShort {
+		return entryPrice * (1 - midPct/100), midPct
+	}
+	return entryPrice * (1 + midPct/100), midPct
+}
+
+// checkLongSignal проверяет условия входа в ЛОНГ на основе сделки Buy.
+//
+// Условия (все должны совпасть):
+//  1. Не в запрещённом временном окне (03:00–10:00 МСК)
+//  2. Ask-стена (age > WallMinAgeSec) поглощается на >= WallAbsorptionPct%
+//  3. Текущая сделка — «кит» Buy
+//  4. VolumeCluster_3m > VolumeCluster_1h_avg (рынок «живой»)
+func (s *Service) checkLongSignal(symbol string, tradeUSDT float64, ob *orderbook.OrderBook, m *SymbolMetrics, wt *WallTracker) {
+	defer utils.TimeTracker(s.log, "checkLongSignal microscalping")()
 
 	if time.Now().Before(s.warmupUntil) {
 		return
 	}
-
-	ob, ok := s.bookSvc.GetBook(symbol)
-	if !ok || len(ob.Bids) == 0 || len(ob.Asks) == 0 {
+	if s.isNoTradeWindow() {
 		return
 	}
 
-	ask0Price, err := strconv.ParseFloat(ob.Asks[0].Price, 64)
-	if err != nil || ask0Price <= 0 {
-		return
-	}
-	ask0Qty, err := strconv.ParseFloat(ob.Asks[0].Qty, 64)
-	if err != nil || ask0Qty <= 0 {
-		return
-	}
-	bid0Price, err := strconv.ParseFloat(ob.Bids[0].Price, 64)
-	if err != nil || bid0Price <= 0 {
+	ask0Price, err1 := strconv.ParseFloat(ob.Asks[0].Price, 64)
+	bid0Price, err2 := strconv.ParseFloat(ob.Bids[0].Price, 64)
+	if err1 != nil || err2 != nil || ask0Price <= 0 || bid0Price <= 0 {
 		return
 	}
 
-	m := s.getOrCreateMetrics(symbol)
-	avgVol1min := m.AvgTradeVol1min()
+	avgTradeSizeUSDT := m.AvgTradeSizeUSDT()
 
-	// --- Условие 1: триггер «съедена стена Ask1» ---
-	// Сделка — кит (qty >= WhaleMult*avg AND qty >= MinWhaleQty)
-	// и объём >= 90% от ask[0].qty
-	isWhale := avgVol1min > 0 && lastBuyQty >= s.cfg.WhaleMult*avgVol1min && lastBuyQty >= s.cfg.MinWhaleQty
-	ask1Eaten := lastBuyQty >= 0.9*ask0Qty
-	if !isWhale || !ask1Eaten {
+	// Условие 1+2: Ask-стена с поглощением >= WallAbsorptionPct%
+	absorbWall := wt.GetAbsorbingAskWall(bid0Price, s.cfg.WallMinAgeSec, s.cfg.WallAbsorptionPct)
+	if absorbWall == nil {
 		return
 	}
 
-	// --- Условие 2: дисбаланс стакана OBI_1pct > OBIMin ---
-	midPrice := (bid0Price + ask0Price) / 2
-	obi := s.calcOBI1pct(ob, midPrice)
-	if obi <= s.cfg.OBIMin {
-		s.log.Debug("microscalping: OBI filter failed",
+	// Условие 3: кит Buy
+	if !s.isWhale(symbol, tradeUSDT, avgTradeSizeUSDT, ob) {
+		s.log.Debug("microscalping long: not a whale",
 			zap.String("symbol", symbol),
-			zap.Float64("obi", obi),
-			zap.Float64("min", s.cfg.OBIMin),
+			zap.Float64("trade_usdt", tradeUSDT),
+			zap.Float64("threshold", s.whaleThresholdUSDT(symbol, avgTradeSizeUSDT)),
 		)
 		return
 	}
 
-	// --- Условие 3: CVD_5s > avg + 2*std (за час) ---
-	cvd5s := m.CVD5s()
-	threshold := m.CVDThreshold()
-	if cvd5s <= threshold {
-		s.log.Debug("microscalping: CVD filter failed",
+	// Условие 4: VolumeCluster_3m > VolumeCluster_1h_avg
+	vc3m := m.VolumeCluster3m()
+	vc1hAvg := m.VolumeCluster1hAvg()
+	if vc3m <= vc1hAvg {
+		s.log.Debug("microscalping long: volume cluster below average",
 			zap.String("symbol", symbol),
-			zap.Float64("cvd_5s", cvd5s),
-			zap.Float64("threshold", threshold),
+			zap.Float64("vc_3m", vc3m),
+			zap.Float64("vc_1h_avg", vc1hAvg),
 		)
 		return
 	}
 
-	// --- Условие 4: спред < SpreadMaxPct ---
-	spread := (ask0Price - bid0Price) / bid0Price
-	if spread >= s.cfg.SpreadMaxPct {
-		s.log.Debug("microscalping: spread filter failed",
-			zap.String("symbol", symbol),
-			zap.Float64("spread", spread),
-			zap.Float64("max", s.cfg.SpreadMaxPct),
-		)
-		return
-	}
-
-	s.log.Info("microscalping: all conditions met, attempting entry",
+	s.log.Info("microscalping long: all conditions met, attempting entry",
 		zap.String("symbol", symbol),
-		zap.Float64("obi_1pct", obi),
-		zap.Float64("cvd_5s", cvd5s),
-		zap.Float64("cvd_threshold", threshold),
-		zap.Float64("spread", spread),
-		zap.Float64("last_buy_qty", lastBuyQty),
-		zap.Float64("ask0_qty", ask0Qty),
+		zap.Float64("wall_price", absorbWall.Price),
+		zap.Float64("wall_age_sec", absorbWall.Age().Seconds()),
+		zap.Float64("wall_absorption_pct", absorbWall.AbsorptionPct()),
+		zap.Float64("whale_usdt", tradeUSDT),
+		zap.Float64("vc_3m", vc3m),
+		zap.Float64("vc_1h_avg", vc1hAvg),
 	)
 
-	// Входим по ask0Price — фактическая цена исполнения taker-покупки
-	tpPrice := s.calcTP(ob, midPrice, ask0Price, avgVol1min)
-	s.tryEnter(symbol, ask0Price, tpPrice, obi, cvd5s)
+	// Ищем Bid-стену поддержки для SL
+	supportWallLevel := float64(0)
+	if suppWall := wt.GetBidSupportWall(ask0Price, s.cfg.WallMinAgeSec); suppWall != nil {
+		supportWallLevel = suppWall.Price
+	}
+
+	tpPrice, _ := s.calcTPPrice(symbol, ask0Price, false)
+	s.tryEnter(symbol, "long", ask0Price, tpPrice, supportWallLevel)
 }
 
-// calcOBI1pct вычисляет OBI по объёмам в диапазоне ±1% от mid-price (базовая валюта).
-func (s *Service) calcOBI1pct(ob *orderbook.OrderBook, midPrice float64) float64 {
-	lower := midPrice * 0.99
-	upper := midPrice * 1.01
+// checkShortSignal проверяет условия входа в ШОРТ на основе сделки Sell.
+//
+// Условия (все должны совпасть):
+//  1. Цена выросла > ShortPumpPct% за последние 15 минут
+//  2. Новая Ask-стена (15–20 сек) на Ask, не убывает
+//  3. CD_1m < 0 И текущая сделка — «кит» Sell
+//  4. Дивергенция: VolumeCluster_3m < VolumeCluster_1h_avg (объём падает, цена выросла)
+//
+// Требует маржинального / фьючерсного аккаунта.
+func (s *Service) checkShortSignal(symbol string, tradeUSDT float64, ob *orderbook.OrderBook, m *SymbolMetrics, wt *WallTracker) {
+	defer utils.TimeTracker(s.log, "checkShortSignal microscalping")()
 
-	var bidVol, askVol float64
-	for _, e := range ob.Bids {
-		p, _ := strconv.ParseFloat(e.Price, 64)
-		if p < lower {
-			break // стакан отсортирован по убыванию цены
-		}
-		q, _ := strconv.ParseFloat(e.Qty, 64)
-		bidVol += q
+	if time.Now().Before(s.warmupUntil) {
+		return
 	}
-	for _, e := range ob.Asks {
-		p, _ := strconv.ParseFloat(e.Price, 64)
-		if p > upper {
-			break // стакан отсортирован по возрастанию цены
-		}
-		q, _ := strconv.ParseFloat(e.Qty, 64)
-		askVol += q
+	if s.isNoTradeWindow() {
+		return
 	}
 
-	return orderbook.CalcOBI(bidVol, askVol)
-}
-
-// calcTP рассчитывает цену тейк-профита:
-// первый уровень ask >= WallMult*avgVol1min в диапазоне TPRangePct — 1 тик ниже стены.
-// Если стена не найдена или TP вышел <= ask0Price — fallback: ask0 * (1 + TPFallbackPct%).
-func (s *Service) calcTP(ob *orderbook.OrderBook, midPrice, ask0Price, avgVol1min float64) float64 {
-	wallThreshold := s.cfg.WallMult * avgVol1min
-	upper := midPrice * (1 + s.cfg.TPRangePct/100)
-	tickSize := calcTickSize(ob.Asks)
-
-	if wallThreshold > 0 {
-		for _, e := range ob.Asks {
-			p, _ := strconv.ParseFloat(e.Price, 64)
-			if p > upper {
-				break
-			}
-			if p <= ask0Price {
-				continue // пропускаем текущий уровень Ask0
-			}
-			q, _ := strconv.ParseFloat(e.Qty, 64)
-			if q >= wallThreshold {
-				tp := p - tickSize
-				if tp <= ask0Price {
-					// Стена слишком близко к входу — 1 тик ниже ≤ entry, ищем следующую
-					continue
-				}
-				s.log.Debug("microscalping: resistance wall found",
-					zap.Float64("wall_price", p),
-					zap.Float64("wall_qty", q),
-					zap.Float64("threshold", wallThreshold),
-					zap.Float64("tick_size", tickSize),
-					zap.Float64("tp", tp),
-				)
-				return tp
-			}
-		}
+	ask0Price, err1 := strconv.ParseFloat(ob.Asks[0].Price, 64)
+	bid0Price, err2 := strconv.ParseFloat(ob.Bids[0].Price, 64)
+	if err1 != nil || err2 != nil || ask0Price <= 0 || bid0Price <= 0 {
+		return
 	}
 
-	return ask0Price * (1 + s.cfg.TPFallbackPct/100)
-}
+	avgTradeSizeUSDT := m.AvgTradeSizeUSDT()
 
-// calcTickSize вычисляет размер тика по разнице между первыми уровнями asks.
-// Если данных недостаточно — возвращает 0.01% от первого уровня как безопасный fallback.
-func calcTickSize(asks []orderbook.Entry) float64 {
-	if len(asks) >= 2 {
-		p0, err0 := strconv.ParseFloat(asks[0].Price, 64)
-		p1, err1 := strconv.ParseFloat(asks[1].Price, 64)
-		if err0 == nil && err1 == nil && p1 > p0 {
-			return p1 - p0
-		}
+	// Условие 1: локальный перегрев за 15 минут
+	pumpThreshold := s.cfg.ShortPumpPct
+	if symbolType(symbol) == "alt" {
+		pumpThreshold = s.cfg.ShortPumpAltPct
 	}
-	if len(asks) >= 1 {
-		p0, err := strconv.ParseFloat(asks[0].Price, 64)
-		if err == nil && p0 > 0 {
-			return p0 * 0.0001 // 0.01% fallback
-		}
+	changePct := m.PriceChangePct15m()
+	if changePct <= pumpThreshold {
+		return
 	}
-	return 0.00001
+
+	// Условие 2: новая Ask-стена (minAgeSec..20сек), не убывает
+	newWall := wt.GetNewAskWall(bid0Price, s.cfg.WallMinAgeSec, 20)
+	if newWall == nil {
+		s.log.Debug("microscalping short: no new stable ask wall",
+			zap.String("symbol", symbol),
+			zap.Float64("price_change_pct", changePct),
+		)
+		return
+	}
+
+	// Условие 3: CD_1m < 0 И кит Sell
+	cd1m := m.CD1m()
+	if cd1m >= 0 {
+		s.log.Debug("microscalping short: CD1m is positive",
+			zap.String("symbol", symbol),
+			zap.Float64("cd1m", cd1m),
+		)
+		return
+	}
+	if !s.isWhale(symbol, tradeUSDT, avgTradeSizeUSDT, ob) {
+		return
+	}
+
+	// Условие 4: дивергенция — VolumeCluster падает
+	vc3m := m.VolumeCluster3m()
+	vc1hAvg := m.VolumeCluster1hAvg()
+	if vc3m >= vc1hAvg {
+		s.log.Debug("microscalping short: no volume divergence",
+			zap.String("symbol", symbol),
+			zap.Float64("vc_3m", vc3m),
+			zap.Float64("vc_1h_avg", vc1hAvg),
+		)
+		return
+	}
+
+	s.log.Info("microscalping short: all conditions met, attempting entry",
+		zap.String("symbol", symbol),
+		zap.Float64("price_change_pct_15m", changePct),
+		zap.Float64("pump_threshold", pumpThreshold),
+		zap.Float64("new_wall_price", newWall.Price),
+		zap.Float64("cd1m", cd1m),
+		zap.Float64("whale_sell_usdt", tradeUSDT),
+		zap.Float64("vc_3m", vc3m),
+		zap.Float64("vc_1h_avg", vc1hAvg),
+	)
+
+	tpPrice, _ := s.calcTPPrice(symbol, bid0Price, true)
+	// Для шорта SupportWall используется как уровень resistance для SL (Ask-стена)
+	s.tryEnter(symbol, "short", bid0Price, tpPrice, newWall.Price)
 }
 
 // tryEnter пытается открыть позицию при прохождении всех фильтров.
-func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float64) {
+// side: "long" или "short".
+// supportWall: для лонга — Bid-стена поддержки (SL); для шорта — уровень резистенции (SL).
+func (s *Service) tryEnter(symbol, side string, entryPrice, tpPrice, supportWall float64) {
 	// 1. Cooldown
 	s.mu.Lock()
 	if last, ok := s.cooldowns[symbol]; ok {
@@ -376,6 +488,7 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 			s.mu.Unlock()
 			s.log.Debug("microscalping: cooldown active",
 				zap.String("symbol", symbol),
+				zap.String("side", side),
 				zap.Duration("remaining", remaining),
 			)
 			return
@@ -401,12 +514,18 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 		return
 	}
 
-	// Защита: TP обязан быть выше цены входа
-	if tpPrice <= entryPrice {
-		tpPrice = entryPrice * (1 + s.cfg.TPFallbackPct/100)
-		s.log.Warn("microscalping: tp <= entry, using fallback",
+	// Защита: TP должен быть на правильной стороне от entry
+	if side == "long" && tpPrice <= entryPrice {
+		tpPrice = entryPrice * (1 + s.cfg.TPPctBTCETHMin/100)
+		s.log.Warn("microscalping: tp <= entry (long), adjusted",
 			zap.String("symbol", symbol),
-			zap.Float64("entry_price", entryPrice),
+			zap.Float64("tp_price", tpPrice),
+		)
+	}
+	if side == "short" && tpPrice >= entryPrice {
+		tpPrice = entryPrice * (1 - s.cfg.TPPctBTCETHMin/100)
+		s.log.Warn("microscalping: tp >= entry (short), adjusted",
+			zap.String("symbol", symbol),
 			zap.Float64("tp_price", tpPrice),
 		)
 	}
@@ -416,22 +535,38 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 		return
 	}
 
+	tradeSide := "buy"
+	if side == "short" {
+		tradeSide = "sell"
+	}
+
+	slPrice := float64(0)
+	if side == "long" {
+		hardSL := entryPrice * (1 - s.cfg.StopLossPct/100)
+		slPrice = hardSL
+		if supportWall > 0 && supportWall < entryPrice && supportWall > hardSL {
+			slPrice = supportWall // используем стену если она выше hard SL
+		}
+	} else {
+		slPrice = entryPrice * (1 + s.cfg.StopLossPct/100)
+	}
+
 	s.log.Info("microscalping: opening trade",
 		zap.String("symbol", symbol),
+		zap.String("side", side),
 		zap.String("exchange", s.cfg.Exchange),
 		zap.Float64("entry_price", entryPrice),
 		zap.Float64("tp_price", tpPrice),
-		zap.Float64("sl_price", entryPrice*(1-s.cfg.StopLossPct/100)),
-		zap.Float64("obi_1pct", obi),
-		zap.Float64("cvd_5s", cvd5s),
+		zap.Float64("sl_price", slPrice),
+		zap.Float64("support_wall", supportWall),
 		zap.Float64("qty", qty),
 	)
 
-	slPrice := entryPrice * (1 - s.cfg.StopLossPct/100)
 	id, err := s.tradeSvc.OpenTrade(s.ctx, trade.Trade{
 		Strategy:      "microscalping",
 		TradeExchange: s.cfg.Exchange,
 		Symbol:        symbol,
+		Side:          tradeSide,
 		Qty:           qty,
 		EntryPrice:    entryPrice,
 		TargetPrice:   &tpPrice,
@@ -440,6 +575,7 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 	if err != nil {
 		s.log.Error("microscalping: open trade failed",
 			zap.String("symbol", symbol),
+			zap.String("side", side),
 			zap.Error(err),
 		)
 		s.mu.Lock()
@@ -449,16 +585,18 @@ func (s *Service) tryEnter(symbol string, entryPrice, tpPrice, obi, cvd5s float6
 	}
 
 	t := &MicroscalpingTrade{
-		ID:         id,
-		Symbol:     symbol,
-		Exchange:   s.cfg.Exchange,
-		EntryPrice: entryPrice,
-		TPPrice:    tpPrice,
-		Qty:        qty,
-		OBI:        obi,
-		OpenedAt:   time.Now(),
-		PriceCh:    make(chan float64, 512),
-		CrashCh:    make(chan struct{}, 1),
+		ID:           id,
+		Symbol:       symbol,
+		Exchange:     s.cfg.Exchange,
+		Side:         side,
+		EntryPrice:   entryPrice,
+		TPPrice:      tpPrice,
+		SupportWall:  supportWall,
+		Qty:          qty,
+		OpenedAt:     time.Now(),
+		HighestPrice: entryPrice,
+		PriceCh:      make(chan float64, 512),
+		CrashCh:      make(chan struct{}, 1),
 	}
 	s.tracker.Add(t)
 	go s.watchTrade(t)
@@ -484,16 +622,21 @@ func (s *Service) OnCrashEvent(event *detector.DetectorEvent) {
 	}
 }
 
-// OnTicker получает тикеры и передаёт цену в горутины активных сделок.
+// OnTicker получает тикеры: передаёт цену в горутины активных сделок и обновляет историю цен.
 func (s *Service) OnTicker(t ticker.Ticker) {
 	defer utils.TimeTracker(s.log, "OnTicker microscalping service")()
 
-	tr, ok := s.tracker.Get(t.Symbol)
-	if !ok || t.Exchange != tr.Exchange {
-		return
-	}
 	price, err := strconv.ParseFloat(t.Price, 64)
 	if err != nil || price <= 0 {
+		return
+	}
+
+	// Обновляем историю цен для шорт-сигнала (PriceChangePct15m)
+	m := s.getOrCreateMetrics(t.Symbol)
+	m.OnPrice(price)
+
+	tr, ok := s.tracker.Get(t.Symbol)
+	if !ok || t.Exchange != tr.Exchange {
 		return
 	}
 	select {
@@ -505,39 +648,43 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 	}
 }
 
-// watchTrade мониторит открытую сделку:
-// - TP по resistance wall / fallback (пересчитывается каждые TPCheckIntervalSec)
-// - SL жёсткий -StopLossPct%
-// - Trailing stop: активируется при росте на TrailActivationPct%, трейлит с шагом TrailPct%
-// - Динамический выход при ослаблении CVD_5s (не раньше MinHoldSec с момента входа)
-// - Crash-событие от detector
-// - Timeout MaxHoldSec
+// watchTrade мониторит открытую сделку до выхода по одному из условий:
+//   - TP: цена достигла цели И Ask-стена стабильна (для лонга) / цена достигла цели (для шорта)
+//   - SL: цена упала ниже Bid-стены поддержки или hard SL (лонг) / поднялась выше hard SL (шорт)
+//   - Trailing stop (только для лонга)
+//   - Timeout: MaxPositionDurationH часов
+//   - Crash-событие от detector
 func (s *Service) watchTrade(t *MicroscalpingTrade) {
-	timeout := time.NewTimer(time.Duration(s.cfg.MaxHoldSec) * time.Second)
+	maxDur := time.Duration(s.cfg.MaxPositionDurationH) * time.Hour
+	timeout := time.NewTimer(maxDur)
 	defer timeout.Stop()
-
-	cvdCheck := time.NewTicker(time.Duration(s.cfg.CVDCheckIntervalMs) * time.Millisecond)
-	defer cvdCheck.Stop()
 
 	tpCheck := time.NewTicker(time.Duration(s.cfg.TPCheckIntervalSec) * time.Second)
 	defer tpCheck.Stop()
 
-	hardSL := t.EntryPrice * (1 - s.cfg.StopLossPct/100)
-	t.HighestPrice = t.EntryPrice
+	hardSL := float64(0)
+	if t.Side == "long" {
+		hardSL = t.EntryPrice * (1 - s.cfg.StopLossPct/100)
+	} else {
+		hardSL = t.EntryPrice * (1 + s.cfg.StopLossPct/100)
+	}
 
 	s.log.Info("microscalping: watching trade",
 		zap.Int64("id", t.ID),
 		zap.String("symbol", t.Symbol),
+		zap.String("side", t.Side),
 		zap.Float64("entry_price", t.EntryPrice),
 		zap.Float64("tp_price", t.TPPrice),
 		zap.Float64("hard_sl", hardSL),
-		zap.Float64("obi_at_entry", t.OBI),
-		zap.Int("max_hold_sec", s.cfg.MaxHoldSec),
-		zap.Float64("trail_activation_pct", s.cfg.TrailActivationPct),
-		zap.Float64("trail_pct", s.cfg.TrailPct),
+		zap.Float64("support_wall", t.SupportWall),
+		zap.Duration("max_duration", maxDur),
 	)
 
 	lastPrice := t.EntryPrice
+	slLevel := hardSL // текущий SL уровень (обновляется по стенам)
+	if t.Side == "long" && t.SupportWall > 0 && t.SupportWall > hardSL {
+		slLevel = t.SupportWall
+	}
 
 	for {
 		select {
@@ -548,8 +695,9 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 			s.log.Warn("microscalping: timeout, force closing",
 				zap.Int64("id", t.ID),
 				zap.String("symbol", t.Symbol),
+				zap.String("side", t.Side),
 				zap.Float64("last_price", lastPrice),
-				zap.Int("hold_sec", int(time.Since(t.OpenedAt).Seconds())),
+				zap.Int("hold_h", int(time.Since(t.OpenedAt).Hours())),
 			)
 			s.closeTrade(t, lastPrice, "timeout")
 			return
@@ -563,135 +711,144 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 			s.closeTrade(t, lastPrice, "crash")
 			return
 
-		case <-cvdCheck.C:
-			// Грейс-период: не выходим по CVD в первые MinHoldSec секунд
-			if time.Since(t.OpenedAt) < time.Duration(s.cfg.MinHoldSec)*time.Second {
-				continue
-			}
-			m := s.getOrCreateMetrics(t.Symbol)
-			cvd := m.CVD5s()
-			avgCVD := m.AvgCVD1h()
-			if cvd <= avgCVD || cvd < 0 {
-				s.log.Info("microscalping: CVD weakened, closing",
-					zap.Int64("id", t.ID),
-					zap.String("symbol", t.Symbol),
-					zap.Float64("cvd_5s", cvd),
-					zap.Float64("avg_cvd_1h", avgCVD),
-					zap.Float64("last_price", lastPrice),
-					zap.Int("hold_sec", int(time.Since(t.OpenedAt).Seconds())),
-				)
-				s.closeTrade(t, lastPrice, "cvd_weak")
-				return
-			}
-
 		case <-tpCheck.C:
-			// Динамический пересчёт TP по актуальному стакану
-			newTP := s.recalcTP(t.Symbol, t.EntryPrice, t.TPPrice)
-			if newTP != t.TPPrice {
-				s.log.Info("microscalping: TP recalculated",
-					zap.Int64("id", t.ID),
-					zap.String("symbol", t.Symbol),
-					zap.Float64("old_tp", t.TPPrice),
-					zap.Float64("new_tp", newTP),
-				)
-				t.TPPrice = newTP
+			if t.Side == "long" {
+				// Обновляем SL по Bid-стене
+				wt := s.getOrCreateWallTracker(t.Symbol)
+				if suppWall := wt.GetBidSupportWall(lastPrice, s.cfg.WallMinAgeSec); suppWall != nil {
+					newSL := suppWall.Price
+					if newSL > hardSL && newSL < lastPrice {
+						if newSL > slLevel {
+							slLevel = newSL
+							s.log.Debug("microscalping: SL updated via bid wall",
+								zap.Int64("id", t.ID),
+								zap.String("symbol", t.Symbol),
+								zap.Float64("new_sl", slLevel),
+							)
+						}
+					}
+				}
+
+				// TP: цена достигла цели И Ask-стена стабильна > TPWallStableSec
+				if lastPrice >= t.TPPrice {
+					wt2 := s.getOrCreateWallTracker(t.Symbol)
+					stableWall := wt2.GetStableAskWall(lastPrice*0.999, s.cfg.TPWallStableSec)
+					if stableWall != nil {
+						exitPrice := stableWall.Price - s.cfg.TPWallOffset
+						if exitPrice <= 0 {
+							exitPrice = lastPrice
+						}
+						s.log.Info("microscalping: TP triggered (stable ask wall)",
+							zap.Int64("id", t.ID),
+							zap.String("symbol", t.Symbol),
+							zap.Float64("price", lastPrice),
+							zap.Float64("wall_price", stableWall.Price),
+							zap.Float64("exit_price", exitPrice),
+							zap.Float64("wall_age_sec", stableWall.Age().Seconds()),
+						)
+						s.closeTrade(t, exitPrice, "tp")
+						return
+					}
+				}
 			}
 
 		case price := <-t.PriceCh:
 			lastPrice = price
 
-			// Обновляем максимум
-			if price > t.HighestPrice {
-				t.HighestPrice = price
-			}
+			if t.Side == "long" {
+				// Обновляем максимум для trailing stop
+				if price > t.HighestPrice {
+					t.HighestPrice = price
+				}
 
-			// Trailing stop: активируем когда цена поднялась на TrailActivationPct%
-			trailActivationLevel := t.EntryPrice * (1 + s.cfg.TrailActivationPct/100)
-			if price >= trailActivationLevel {
-				newTrailSL := t.HighestPrice * (1 - s.cfg.TrailPct/100)
-				if !t.TrailActive {
-					t.TrailActive = true
-					t.TrailSL = newTrailSL
-					s.log.Info("microscalping: trailing stop activated",
+				// Trailing stop: активируем при росте на TrailActivationPct%
+				trailActivation := t.EntryPrice * (1 + s.cfg.TrailActivationPct/100)
+				if price >= trailActivation {
+					newTrailSL := t.HighestPrice * (1 - s.cfg.TrailPct/100)
+					if !t.TrailActive {
+						t.TrailActive = true
+						t.TrailSL = newTrailSL
+						s.log.Info("microscalping: trailing stop activated",
+							zap.Int64("id", t.ID),
+							zap.String("symbol", t.Symbol),
+							zap.Float64("price", price),
+							zap.Float64("trail_sl", t.TrailSL),
+						)
+					} else if newTrailSL > t.TrailSL {
+						t.TrailSL = newTrailSL
+					}
+				}
+
+				// Trailing SL
+				if t.TrailActive && price <= t.TrailSL {
+					s.log.Info("microscalping: trailing SL hit",
 						zap.Int64("id", t.ID),
 						zap.String("symbol", t.Symbol),
 						zap.Float64("price", price),
 						zap.Float64("trail_sl", t.TrailSL),
+						zap.Float64("highest", t.HighestPrice),
 					)
-				} else if newTrailSL > t.TrailSL {
-					t.TrailSL = newTrailSL
+					s.closeTrade(t, price, "trail_sl")
+					return
 				}
-			}
 
-			// Проверка trailing SL
-			if t.TrailActive && price <= t.TrailSL {
-				s.log.Info("microscalping: trailing SL hit",
-					zap.Int64("id", t.ID),
-					zap.String("symbol", t.Symbol),
-					zap.Float64("price", price),
-					zap.Float64("trail_sl", t.TrailSL),
-					zap.Float64("highest", t.HighestPrice),
-				)
-				s.closeTrade(t, price, "trail_sl")
-				return
-			}
+				// SL по стене / hard SL
+				if price <= slLevel {
+					s.log.Warn("microscalping: SL hit (long)",
+						zap.Int64("id", t.ID),
+						zap.String("symbol", t.Symbol),
+						zap.Float64("price", price),
+						zap.Float64("sl_level", slLevel),
+						zap.Float64("support_wall", t.SupportWall),
+					)
+					s.closeTrade(t, price, "sl")
+					return
+				}
 
-			// Жёсткий SL
-			if price <= hardSL {
-				s.log.Warn("microscalping: hard SL hit",
-					zap.Int64("id", t.ID),
-					zap.String("symbol", t.Symbol),
-					zap.Float64("price", price),
-					zap.Float64("hard_sl", hardSL),
-				)
-				s.closeTrade(t, price, "sl")
-				return
-			}
+				// TP (быстрая проверка в price loop — стену проверяем в tpCheck)
+				if t.TPPrice > 0 && price >= t.TPPrice {
+					// Не закрываем сразу — ждём подтверждения стеной в tpCheck
+					// Но если прошло более 30 сек с момента достижения цели — закрываем без стены
+					s.log.Debug("microscalping: TP target reached, waiting for wall confirmation",
+						zap.Int64("id", t.ID),
+						zap.String("symbol", t.Symbol),
+						zap.Float64("price", price),
+						zap.Float64("tp_price", t.TPPrice),
+					)
+				}
 
-			// TP
-			if t.TPPrice > 0 && price >= t.TPPrice {
-				s.log.Info("microscalping: TP hit",
-					zap.Int64("id", t.ID),
-					zap.String("symbol", t.Symbol),
-					zap.Float64("price", price),
-					zap.Float64("tp_price", t.TPPrice),
-				)
-				s.closeTrade(t, price, "tp")
-				return
+			} else {
+				// SHORT: SL если цена выросла выше hard SL
+				if price >= hardSL {
+					s.log.Warn("microscalping: SL hit (short)",
+						zap.Int64("id", t.ID),
+						zap.String("symbol", t.Symbol),
+						zap.Float64("price", price),
+						zap.Float64("hard_sl", hardSL),
+					)
+					s.closeTrade(t, price, "sl")
+					return
+				}
+
+				// SHORT TP: цена упала до целевого уровня
+				if t.TPPrice > 0 && price <= t.TPPrice {
+					s.log.Info("microscalping: TP hit (short)",
+						zap.Int64("id", t.ID),
+						zap.String("symbol", t.Symbol),
+						zap.Float64("price", price),
+						zap.Float64("tp_price", t.TPPrice),
+					)
+					s.closeTrade(t, price, "tp")
+					return
+				}
 			}
 		}
 	}
 }
 
-// recalcTP пересчитывает TP по актуальному стакану.
-// Если новая стена не найдена или находится ниже цены входа — возвращает currentTP без изменений.
-func (s *Service) recalcTP(symbol string, entryPrice, currentTP float64) float64 {
-	ob, ok := s.bookSvc.GetBook(symbol)
-	if !ok || len(ob.Asks) == 0 || len(ob.Bids) == 0 {
-		return currentTP
-	}
-	ask0Price, err := strconv.ParseFloat(ob.Asks[0].Price, 64)
-	if err != nil || ask0Price <= 0 {
-		return currentTP
-	}
-	bid0Price, err := strconv.ParseFloat(ob.Bids[0].Price, 64)
-	if err != nil || bid0Price <= 0 {
-		return currentTP
-	}
-	midPrice := (bid0Price + ask0Price) / 2
-	avgVol1min := s.getOrCreateMetrics(symbol).AvgTradeVol1min()
-
-	newTP := s.calcTP(ob, midPrice, ask0Price, avgVol1min)
-	if newTP <= entryPrice {
-		return currentTP
-	}
-	return newTP
-}
-
 // closeTrade закрывает сделку и логирует результат.
 func (s *Service) closeTrade(t *MicroscalpingTrade, exitPrice float64, reason string) {
 	defer utils.TimeTracker(s.log, "closeTrade microscalping service")()
-
 	defer s.tracker.Remove(t.Symbol)
 
 	err := s.tradeSvc.CloseTrade(s.ctx, t.ID, exitPrice, reason)
@@ -705,15 +862,21 @@ func (s *Service) closeTrade(t *MicroscalpingTrade, exitPrice float64, reason st
 		return
 	}
 
-	pnl := (exitPrice - t.EntryPrice) * t.Qty
+	var pnl float64
+	if t.Side == "long" {
+		pnl = (exitPrice - t.EntryPrice) * t.Qty
+	} else {
+		pnl = (t.EntryPrice - exitPrice) * t.Qty
+	}
+
 	s.log.Info("microscalping: trade closed",
 		zap.Int64("id", t.ID),
 		zap.String("symbol", t.Symbol),
+		zap.String("side", t.Side),
 		zap.String("reason", reason),
 		zap.Float64("entry_price", t.EntryPrice),
 		zap.Float64("exit_price", exitPrice),
 		zap.Float64("tp_price", t.TPPrice),
-		zap.Float64("obi_at_entry", t.OBI),
 		zap.Float64("pnl_usdt", pnl),
 		zap.Int("hold_sec", int(time.Since(t.OpenedAt).Seconds())),
 	)

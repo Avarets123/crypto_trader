@@ -10,6 +10,7 @@ type Trade struct {
 	SignalExchange string   // биржа-источник сигнала ('binance')
 	TradeExchange  string   // биржа исполнения ('binance')
 	Symbol         string
+	Side           string   // "buy" (лонг) | "sell" (шорт); по умолчанию "buy"
 	Qty            float64
 	EntryPrice     float64
 	TargetPrice    *float64 // цель TP

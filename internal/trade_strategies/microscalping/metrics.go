@@ -1,180 +1,165 @@
 package microscalping
 
 import (
-	"math"
 	"sync"
 	"time"
-
-	"github.com/osman/bot-traider/internal/shared/utils"
-	"go.uber.org/zap"
 )
 
 const (
-	cvdWindow5s  = 5 * time.Second
-	tradeWin1min = 60 * time.Second
-	cvdHistory1h = time.Hour
+	cdWindow1m       = 60 * time.Second
+	volClusterWindow = 3 * time.Minute
+	priceHistWindow  = 15 * time.Minute
+	tradeHistWindow  = time.Hour
+	maxTrades500     = 500
 )
 
 type tradeEntry struct {
-	t     time.Time
-	qty   float64 // объём в базовой валюте
-	isBuy bool
+	t       time.Time
+	qty     float64 // базовая валюта
+	qtyUSDT float64 // объём в USDT (qty * price)
+	isBuy   bool
 }
 
-type cvdSnapshot struct {
-	t   time.Time
-	val float64
+type priceEntry struct {
+	t     time.Time
+	price float64
 }
 
 // SymbolMetrics отслеживает скользящие метрики для одного символа:
-// CVD_5s, AvgTradeVol_1min и историю CVD за час для расчёта порога.
+// CD_1m (кумулятивная дельта за 1 мин), VolumeCluster (3 мин),
+// история цен (15 мин), средний объём сделки (последние 500 сделок).
 type SymbolMetrics struct {
-	mu         sync.Mutex
-	trades     []tradeEntry  // сделки за последний час
-	cvdHistory []cvdSnapshot // снимки CVD_5s за последний час
-	lastQty    float64
-	lastIsBuy  bool
-	hasLast    bool
-	log *zap.Logger
+	mu        sync.Mutex
+	trades1h  []tradeEntry // сделки за последний час (для CD, VolumeCluster)
+	trades500 []tradeEntry // последние 500 сделок (для AvgTradeSizeUSDT)
+	priceHist []priceEntry // цены за последние 15 минут
 }
 
-func newSymbolMetrics(log *zap.Logger) *SymbolMetrics {
-	return &SymbolMetrics{
-		log: log,
-	}
+func newSymbolMetrics() *SymbolMetrics {
+	return &SymbolMetrics{}
 }
 
-// OnTrade регистрирует новую сделку и записывает снимок CVD_5s в историю.
-func (m *SymbolMetrics) OnTrade(qty float64, isBuy bool) {
-	defer utils.TimeTracker(m.log, "OnTrade microscalping")()
+// OnTrade регистрирует новую сделку (qty в базовой валюте, price в USDT).
+func (m *SymbolMetrics) OnTrade(qty, price float64, isBuy bool) {
 	now := time.Now()
-	cutoff := now.Add(-cvdHistory1h)
+	e := tradeEntry{
+		t:       now,
+		qty:     qty,
+		qtyUSDT: qty * price,
+		isBuy:   isBuy,
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.trades = append(m.trades, tradeEntry{t: now, qty: qty, isBuy: isBuy})
-	m.lastQty = qty
-	m.lastIsBuy = isBuy
-	m.hasLast = true
-
-	// Обрезаем сделки старше 1 часа
+	m.trades1h = append(m.trades1h, e)
+	cutoff1h := now.Add(-tradeHistWindow)
 	first := 0
-	for first < len(m.trades) && m.trades[first].t.Before(cutoff) {
+	for first < len(m.trades1h) && m.trades1h[first].t.Before(cutoff1h) {
 		first++
 	}
 	if first > 0 {
-		m.trades = m.trades[first:]
+		m.trades1h = m.trades1h[first:]
 	}
 
-	// Записываем текущий снимок CVD_5s
-	cvd := m.calcCVD5sLocked(now)
-	m.cvdHistory = append(m.cvdHistory, cvdSnapshot{t: now, val: cvd})
-
-	// Обрезаем старые снимки CVD
-	first = 0
-	for first < len(m.cvdHistory) && m.cvdHistory[first].t.Before(cutoff) {
-		first++
-	}
-	if first > 0 {
-		m.cvdHistory = m.cvdHistory[first:]
+	m.trades500 = append(m.trades500, e)
+	if len(m.trades500) > maxTrades500 {
+		m.trades500 = m.trades500[len(m.trades500)-maxTrades500:]
 	}
 }
 
-// CVD5s возвращает кумулятивную дельту объёма за последние 5 секунд.
-func (m *SymbolMetrics) CVD5s() float64 {
-	defer utils.TimeTracker(m.log, "CDV5S microscalping")()
-
+// OnPrice регистрирует текущую цену для истории 15 минут (для ShortPumpPct).
+func (m *SymbolMetrics) OnPrice(price float64) {
+	now := time.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.calcCVD5sLocked(time.Now())
+	m.priceHist = append(m.priceHist, priceEntry{t: now, price: price})
+	cutoff := now.Add(-priceHistWindow)
+	first := 0
+	for first < len(m.priceHist) && m.priceHist[first].t.Before(cutoff) {
+		first++
+	}
+	if first > 0 {
+		m.priceHist = m.priceHist[first:]
+	}
 }
 
-// calcCVD5sLocked вычисляет CVD_5s без захвата мьютекса (мьютекс уже должен быть захвачен).
-// Итерируем с конца — сделки отсортированы по времени (новые в конце).
-func (m *SymbolMetrics) calcCVD5sLocked(now time.Time) float64 {
-	cutoff := now.Add(-cvdWindow5s)
-	var cvd float64
-	for i := len(m.trades) - 1; i >= 0; i-- {
-		e := m.trades[i]
+// CD1m возвращает кумулятивную дельту объёма (USDT) за последнюю минуту.
+// Положительное значение — давление покупателей, отрицательное — продавцов.
+func (m *SymbolMetrics) CD1m() float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cutoff := time.Now().Add(-cdWindow1m)
+	var cd float64
+	for i := len(m.trades1h) - 1; i >= 0; i-- {
+		e := m.trades1h[i]
 		if e.t.Before(cutoff) {
 			break
 		}
 		if e.isBuy {
-			cvd += e.qty
+			cd += e.qtyUSDT
 		} else {
-			cvd -= e.qty
+			cd -= e.qtyUSDT
 		}
 	}
-	return cvd
+	return cd
 }
 
-// AvgTradeVol1min возвращает средний объём сделки в базовой валюте за последнюю минуту.
-func (m *SymbolMetrics) AvgTradeVol1min() float64 {
-	defer utils.TimeTracker(m.log, "AvgTradeVol1min microscalping")()
-
+// VolumeCluster3m возвращает суммарный объём сделок (USDT) за последние 3 минуты.
+func (m *SymbolMetrics) VolumeCluster3m() float64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cutoff := time.Now().Add(-tradeWin1min)
-	var sum float64
-	var count int
-	for i := len(m.trades) - 1; i >= 0; i-- {
-		e := m.trades[i]
+	cutoff := time.Now().Add(-volClusterWindow)
+	var vol float64
+	for i := len(m.trades1h) - 1; i >= 0; i-- {
+		e := m.trades1h[i]
 		if e.t.Before(cutoff) {
 			break
 		}
-		sum += e.qty
-		count++
+		vol += e.qtyUSDT
 	}
-	if count == 0 {
+	return vol
+}
+
+// VolumeCluster1hAvg возвращает среднее VolumeCluster3m за последний час.
+// Рассчитывается как суммарный объём за час / 20 (количество 3-минутных периодов в часе).
+func (m *SymbolMetrics) VolumeCluster1hAvg() float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total float64
+	for _, e := range m.trades1h {
+		total += e.qtyUSDT
+	}
+	return total / 20.0
+}
+
+// AvgTradeSizeUSDT возвращает средний объём сделки (USDT) за последние 500 сделок.
+func (m *SymbolMetrics) AvgTradeSizeUSDT() float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.trades500)
+	if n == 0 {
 		return 0
 	}
-	return sum / float64(count)
-}
-
-// CVDStats возвращает среднее и стандартное отклонение CVD_5s за последний час.
-func (m *SymbolMetrics) CVDStats() (avg, std float64) {
-	defer utils.TimeTracker(m.log, "CVDStats microscalping")()
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	n := len(m.cvdHistory)
-	if n == 0 {
-		return 0, 0
-	}
 	var sum float64
-	for _, s := range m.cvdHistory {
-		sum += s.val
+	for _, e := range m.trades500 {
+		sum += e.qtyUSDT
 	}
-	avg = sum / float64(n)
-	var variance float64
-	for _, s := range m.cvdHistory {
-		d := s.val - avg
-		variance += d * d
-	}
-	variance /= float64(n)
-	std = math.Sqrt(variance)
-	return
+	return sum / float64(n)
 }
 
-// CVDThreshold возвращает avg_CVD_1h + 2*std_CVD_1h — порог аномального CVD_5s.
-func (m *SymbolMetrics) CVDThreshold() float64 {
-	avg, std := m.CVDStats()
-	return avg + 2*std
-}
-
-// AvgCVD1h возвращает среднее CVD_5s за последний час.
-func (m *SymbolMetrics) AvgCVD1h() float64 {
-	avg, _ := m.CVDStats()
-	return avg
-}
-
-// GetLastTrade возвращает последнюю зарегистрированную сделку.
-func (m *SymbolMetrics) GetLastTrade() (qty float64, isBuy bool, ok bool) {
+// PriceChangePct15m возвращает изменение цены за последние 15 минут в процентах.
+// Возвращает 0 если истории недостаточно.
+func (m *SymbolMetrics) PriceChangePct15m() float64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.hasLast {
-		return 0, false, false
+	if len(m.priceHist) < 2 {
+		return 0
 	}
-	return m.lastQty, m.lastIsBuy, true
+	oldest := m.priceHist[0].price
+	newest := m.priceHist[len(m.priceHist)-1].price
+	if oldest <= 0 {
+		return 0
+	}
+	return (newest - oldest) / oldest * 100
 }

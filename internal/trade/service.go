@@ -86,7 +86,11 @@ func (m *Service) OpenTrade(ctx context.Context, newTrade Trade) (int64, error) 
 		return 0, fmt.Errorf("trade service: no rest client for exchange %q", newTrade.TradeExchange)
 	}
 
-	result, err := client.PlaceMarketOrder(ctx, newTrade.Symbol, "buy", newTrade.Qty)
+	entrySide := newTrade.Side
+	if entrySide == "" {
+		entrySide = "buy"
+	}
+	result, err := client.PlaceMarketOrder(ctx, newTrade.Symbol, entrySide, newTrade.Qty)
 	if err != nil {
 		m.log.Error("trade service: error in create order",
 			zap.String("symbol", newTrade.Symbol),
@@ -123,6 +127,7 @@ func (m *Service) OpenTrade(ctx context.Context, newTrade Trade) (int64, error) 
 		SignalExchange: newTrade.SignalExchange,
 		TradeExchange:  newTrade.TradeExchange,
 		Symbol:         newTrade.Symbol,
+		Side:           entrySide,
 		Qty:            filledQty,
 		EntryPrice:     newTrade.EntryPrice,
 		TargetPrice:    newTrade.TargetPrice,
@@ -182,12 +187,18 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 	}
 	// trade.Qty уже содержит фактически полученное количество после вычета комиссии при покупке
 	// (биржевые клиенты возвращают netQty в result.Qty).
-	m.log.Info("trade service: placing sell order",
+	// Для шорта (side="sell") закрытие выполняется через "buy".
+	closeSide := "sell"
+	if trade.Side == "sell" {
+		closeSide = "buy"
+	}
+	m.log.Info("trade service: placing close order",
 		zap.Int64("id", id),
 		zap.String("symbol", trade.Symbol),
-		zap.Float64("sell_qty", trade.Qty),
+		zap.String("close_side", closeSide),
+		zap.Float64("qty", trade.Qty),
 	)
-	result, err := client.PlaceMarketOrder(ctx, trade.Symbol, "sell", trade.Qty)
+	result, err := client.PlaceMarketOrder(ctx, trade.Symbol, closeSide, trade.Qty)
 	if err != nil {
 		m.log.Error("exchange: close order failed",
 			zap.Int64("id", id),
