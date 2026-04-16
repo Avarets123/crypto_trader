@@ -131,9 +131,13 @@ func (f *TradeFetcher) connect(ctx context.Context, id int, symbols []string) er
 	if err := json.Unmarshal(rawAck, &ack); err != nil {
 		return fmt.Errorf("unmarshal ack: %w", err)
 	}
+	if ack.Type == "error" {
+		return fmt.Errorf("kucoin trade: subscribe rejected by server: %s", string(rawAck))
+	}
 	if ack.Type != "ack" {
 		f.log.Warn("kucoin trade: unexpected ack type",
 			zap.String("type", ack.Type),
+			zap.String("raw", string(rawAck)),
 			zap.Int("conn_id", id),
 		)
 	}
@@ -144,9 +148,32 @@ func (f *TradeFetcher) connect(ctx context.Context, id int, symbols []string) er
 		zap.Strings("list", symbols),
 	)
 
-	// Пинг-горутина
-	pingCtx, pingCancel := context.WithCancel(ctx)
-	defer pingCancel()
+	// Единый writer-канал — gorilla/websocket требует "один reader + один writer".
+	// Все записи (ping-клиент + pong-ответы) идут через этот канал.
+	writes := make(chan []byte, 16)
+
+	writeCtx, writeCancel := context.WithCancel(ctx)
+	defer writeCancel()
+
+	// Writer-горутина — единственный горутин, пишущий в conn.
+	go func() {
+		for {
+			select {
+			case <-writeCtx.Done():
+				return
+			case msg, ok := <-writes:
+				if !ok {
+					return
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+					f.log.Warn("kucoin trade: write failed", zap.Int("conn_id", id), zap.Error(err))
+					return
+				}
+			}
+		}
+	}()
+
+	// Пинг-горутина — шлёт ping через writes-канал.
 	go func() {
 		pingInterval := time.Duration(pingMs) * time.Millisecond
 		if pingInterval <= 0 {
@@ -156,21 +183,25 @@ func (f *TradeFetcher) connect(ctx context.Context, id int, symbols []string) er
 		defer t.Stop()
 		for {
 			select {
-			case <-pingCtx.Done():
+			case <-writeCtx.Done():
 				return
 			case <-t.C:
 				pid := newConnectID()
 				ping := map[string]string{"id": pid, "type": "ping"}
 				d, _ := json.Marshal(ping)
-				conn.WriteMessage(websocket.TextMessage, d) //nolint:errcheck
+				select {
+				case writes <- d:
+				case <-writeCtx.Done():
+					return
+				}
 			}
 		}
 	}()
 
-	return f.readLoop(ctx, conn, id)
+	return f.readLoop(ctx, conn, id, writes)
 }
 
-func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, id int) error {
+func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, id int, writes chan<- []byte) error {
 	buf := make([]exchange_orders.ExchangeOrder, 0, tradeFlushSize)
 	flushTicker := time.NewTicker(tradeFlushInterval)
 	defer flushTicker.Stop()
@@ -190,7 +221,7 @@ func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, id in
 		buf = buf[:0]
 	}
 
-	msgs := make(chan []byte, 256)
+	msgs := make(chan []byte, 512)
 	go func() {
 		defer close(msgs)
 		for {
@@ -218,6 +249,35 @@ func (f *TradeFetcher) readLoop(ctx context.Context, conn *websocket.Conn, id in
 				flush()
 				return fmt.Errorf("ws connection closed")
 			}
+
+			// Быстрый разбор типа для обработки серверных ping и диагностики
+			var hdr WsMessage
+			if err := json.Unmarshal(raw, &hdr); err == nil {
+				switch hdr.Type {
+				case "ping":
+					// Серверный ping — отвечаем pong через writes-канал (единственный writer-горутина).
+					pong := map[string]string{"id": hdr.ID, "type": "pong"}
+					d, _ := json.Marshal(pong)
+					select {
+					case writes <- d:
+					default:
+						f.log.Warn("kucoin trade: pong dropped (writes full)", zap.Int("conn_id", id))
+					}
+					continue
+				case "pong", "ack", "welcome":
+					continue
+				case "message":
+					// нормальный путь — парсим ниже
+				default:
+					f.log.Debug("kucoin trade: unknown msg type",
+						zap.String("type", hdr.Type),
+						zap.String("subject", hdr.Subject),
+						zap.Int("conn_id", id),
+					)
+					continue
+				}
+			}
+
 			order := f.parseOrder(raw)
 			if order == nil {
 				continue
@@ -245,7 +305,15 @@ func (f *TradeFetcher) parseOrder(raw []byte) *exchange_orders.ExchangeOrder {
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return nil
 	}
-	if msg.Type != "message" || msg.Subject != "trade.l3match" {
+	if msg.Type != "message" {
+		return nil
+	}
+	if msg.Subject != "trade.l3match" {
+		// Логируем неожиданный subject — помогает диагностировать изменения в API KuCoin.
+		f.log.Warn("kucoin trade: unexpected subject, message skipped",
+			zap.String("subject", msg.Subject),
+			zap.String("topic", msg.Topic),
+		)
 		return nil
 	}
 
