@@ -8,10 +8,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	investgo "github.com/russianinvestments/invest-api-go-sdk/investgo"
 	pb "github.com/russianinvestments/invest-api-go-sdk/proto"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/osman/bot-traider/internal/shared/exchange"
 )
@@ -391,12 +394,7 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 		OrderId:      generateOrderID(),
 	}
 
-	var resp *investgo.PostOrderResponse
-	if c.cfg.Sandbox {
-		resp, err = c.sdkClient.NewSandboxServiceClient().PostSandboxOrder(req)
-	} else {
-		resp, err = c.sdkClient.NewOrdersServiceClient().PostOrder(req)
-	}
+	resp, err := c.postOrderWithRetry(req)
 	if err != nil {
 		return exchange.OrderResult{}, fmt.Errorf("tinkoff place market order: %w", err)
 	}
@@ -453,12 +451,7 @@ func (c *RestClient) PlaceLimitOrder(ctx context.Context, symbol, side string, q
 		OrderId:      generateOrderID(),
 	}
 
-	var resp *investgo.PostOrderResponse
-	if c.cfg.Sandbox {
-		resp, err = c.sdkClient.NewSandboxServiceClient().PostSandboxOrder(req)
-	} else {
-		resp, err = c.sdkClient.NewOrdersServiceClient().PostOrder(req)
-	}
+	resp, err := c.postOrderWithRetry(req)
 	if err != nil {
 		return exchange.OrderResult{}, fmt.Errorf("tinkoff place limit order: %w", err)
 	}
@@ -615,6 +608,44 @@ func moneyValueToFloat(mv *pb.MoneyValue) float64 {
 		return 0
 	}
 	return float64(mv.GetUnits()) + float64(mv.GetNano())/1e9
+}
+
+// postOrderWithRetry выставляет ордер с повтором при ошибке 80002 (request rate limit).
+// Другие ResourceExhausted подкоды (80001, 80004-80006) не ретраятся.
+func (c *RestClient) postOrderWithRetry(req *investgo.PostOrderRequest) (*investgo.PostOrderResponse, error) {
+	const maxAttempts = 3
+	const rateLimitDelay = 10 * time.Second // 80002 = лимит запросов/мин
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var resp *investgo.PostOrderResponse
+		var err error
+		if c.cfg.Sandbox {
+			resp, err = c.sdkClient.NewSandboxServiceClient().PostSandboxOrder(req)
+		} else {
+			resp, err = c.sdkClient.NewOrdersServiceClient().PostOrder(req)
+		}
+		if err == nil {
+			return resp, nil
+		}
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.ResourceExhausted {
+			return nil, err
+		}
+		// Ретраим только 80002 (Request limit exceeded)
+		if !strings.Contains(st.Message(), "80002") {
+			return nil, fmt.Errorf("%w (sub-code: %s)", err, st.Message())
+		}
+		if attempt >= maxAttempts-1 {
+			break
+		}
+		c.log.Warn("tinkoff: request rate limit (80002), retrying",
+			zap.Int("attempt", attempt+1),
+			zap.Duration("delay", rateLimitDelay),
+		)
+		time.Sleep(rateLimitDelay)
+		req.OrderId = generateOrderID()
+	}
+	return nil, fmt.Errorf("tinkoff: order failed after %d attempts (rate limit)", maxAttempts)
 }
 
 func generateOrderID() string {

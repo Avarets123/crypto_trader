@@ -237,13 +237,7 @@ func main() {
 	tradeRedisRepo := trade.NewTradeRedisRepository(rdb, log.With(zap.String("component", "trade-redis")))
 	tradeSvc.WithRedisRepo(tradeRedisRepo)
 
-	// Восстанавливаем и закрываем все позиции, оставшиеся с предыдущего запуска
 	tradesThreadID := sharedconfig.GetEnvInt("TELEGRAM_TRADES_THREAD_ID", 0)
-	recoveredTrades := notifications.RecoverTrades(ctx, tradeRedisRepo, restClients, tradeRepo, log.With(zap.String("component", "recover-trades")))
-	if len(recoveredTrades) > 0 {
-		log.Warn("recovered and closed positions from previous run", zap.Int("count", len(recoveredTrades)))
-		notifications.SendRecoveryNotification(ctx, tgNotifier, tradesThreadID, recoveredTrades)
-	}
 	tradeNotif := notifications.NewTradeNotifier(ctx, tgNotifier, log.With(zap.String("component", "trade-notifier")), tradesThreadID)
 	tradeSvc.WithOnTradeOpen(tradeNotif.OnTradeOpen)
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
@@ -491,6 +485,13 @@ func main() {
 
 	if !anyExchangeEnabled {
 		log.Warn("no exchanges enabled, bot will do nothing")
+	}
+
+	// Восстанавливаем позиции из предыдущего запуска — после регистрации всех REST-клиентов
+	recoveredTrades := notifications.RecoverTrades(ctx, tradeRedisRepo, restClients, tradeRepo, log.With(zap.String("component", "recover-trades")))
+	if len(recoveredTrades) > 0 {
+		log.Warn("recovered and closed positions from previous run", zap.Int("count", len(recoveredTrades)))
+		notifications.SendRecoveryNotification(ctx, tgNotifier, tradesThreadID, recoveredTrades)
 	}
 
 	<-ctx.Done()

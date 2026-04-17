@@ -76,7 +76,12 @@ func (sw *SignalWindow) IsShort(now time.Time) bool {
 func (sw *SignalWindow) Reset() {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
-	*sw = SignalWindow{}
+	sw.longImbalance = time.Time{}
+	sw.longWhale = time.Time{}
+	sw.longDelta = time.Time{}
+	sw.shortImbalance = time.Time{}
+	sw.shortWhale = time.Time{}
+	sw.shortDelta = time.Time{}
 }
 
 // allWithinWindow возвращает true если:
