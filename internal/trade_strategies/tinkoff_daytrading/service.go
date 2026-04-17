@@ -237,12 +237,6 @@ func (s *Service) checkEntry(symbol string, st *symbolState, snap MetricSnapshot
 	if st.sigWin.IsLong(now) {
 		go s.openPosition(symbol, "buy", snap)
 	} else if st.sigWin.IsShort(now) {
-		if !s.cfg.AllowShort {
-			s.log.Debug("tinkoff daytrading: short signal skipped (AllowShort=false)",
-				zap.String("symbol", symbol),
-			)
-			return
-		}
 		go s.openPosition(symbol, "sell", snap)
 	}
 }

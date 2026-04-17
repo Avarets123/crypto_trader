@@ -2,14 +2,12 @@ package tinkoff
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"math"
-	"math/rand"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	investgo "github.com/russianinvestments/invest-api-go-sdk/investgo"
 	pb "github.com/russianinvestments/invest-api-go-sdk/proto"
@@ -95,6 +93,12 @@ func NewRestClient(ctx context.Context, cfg *Config, log *zap.Logger) (*RestClie
 	if err := c.checkAccount(); err != nil {
 		stopAll()
 		return nil, fmt.Errorf("tinkoff rest: %w", err)
+	}
+
+	if cfg.Sandbox && cfg.TradeEnabled {
+		if err := c.ensureSandboxBalance(); err != nil {
+			log.Warn("tinkoff rest: sandbox balance top-up failed", zap.Error(err))
+		}
 	}
 
 	log.Info("tinkoff rest client ready",
@@ -212,6 +216,43 @@ func (c *RestClient) checkAccount() error {
 		ids = append(ids, acc.GetId())
 	}
 	return fmt.Errorf("account %q not found, available: %v", c.cfg.AccountID, ids)
+}
+
+// sandboxTopUpRUB — сумма пополнения sandbox-счёта при нехватке баланса (рублей).
+const sandboxTopUpRUB = 1_000_000
+
+// ensureSandboxBalance пополняет sandbox-счёт если баланс RUB равен нулю или недостаточен.
+func (c *RestClient) ensureSandboxBalance() error {
+	sandboxClient := c.sdkClient.NewSandboxServiceClient()
+	resp, err := sandboxClient.GetSandboxWithdrawLimits(c.cfg.AccountID)
+	if err != nil {
+		return fmt.Errorf("get sandbox balance: %w", err)
+	}
+	var rubBalance float64
+	for _, mv := range resp.GetMoney() {
+		if strings.ToLower(mv.GetCurrency()) == "rub" {
+			rubBalance = moneyValueToFloat(mv)
+			break
+		}
+	}
+	if rubBalance >= float64(sandboxTopUpRUB)/2 {
+		c.log.Info("tinkoff sandbox: balance sufficient", zap.Float64("rub", rubBalance))
+		return nil
+	}
+	_, err = sandboxClient.SandboxPayIn(&investgo.SandboxPayInRequest{
+		AccountId: c.cfg.AccountID,
+		Currency:  "RUB",
+		Unit:      sandboxTopUpRUB,
+		Nano:      0,
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox pay in: %w", err)
+	}
+	c.log.Info("tinkoff sandbox: balance topped up",
+		zap.Float64("before", rubBalance),
+		zap.Int64("added_rub", sandboxTopUpRUB),
+	)
+	return nil
 }
 
 // resolveInstrument возвращает UID и размер лота для тикера.
@@ -577,6 +618,11 @@ func moneyValueToFloat(mv *pb.MoneyValue) float64 {
 }
 
 func generateOrderID() string {
-	return strconv.FormatInt(time.Now().UnixNano(), 36) +
-		strconv.FormatInt(rand.Int63n(1e9), 36) //nolint:gosec
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	// UUID v4 формат: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
