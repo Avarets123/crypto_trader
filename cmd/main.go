@@ -14,6 +14,7 @@ import (
 	"github.com/osman/bot-traider/internal/binance"
 	exchange_orders "github.com/osman/bot-traider/internal/exchange_orders"
 	"github.com/osman/bot-traider/internal/kucoin"
+	"github.com/osman/bot-traider/internal/tinkoff"
 	"github.com/osman/bot-traider/internal/news"
 	"github.com/osman/bot-traider/internal/notifications"
 	"github.com/osman/bot-traider/internal/orderbook"
@@ -379,6 +380,82 @@ func main() {
 		}()
 	} else {
 		log.Info("kucoin disabled (KUCOIN_ENABLED=false)")
+	}
+
+	// --- Т-Инвестиции ---
+	tinkoffCfg := tinkoff.LoadConfig()
+	log.Info("tinkoff config loaded", zap.Bool("enabled", tinkoffCfg.Enabled))
+	if tinkoffCfg.Enabled {
+		anyExchangeEnabled = true
+
+		// Стриминговый клиент рыночных данных
+		tinkoffClient := tinkoff.NewClient(
+			tinkoffCfg,
+			log.With(zap.String("market", "tinkoff")),
+			tickerService,
+			obStore,
+		)
+
+		// Fan-out trade-хука: tradeAgg + microscalping + запись в БД
+		tinkoffClient.WithOnTrade(func(o exchange_orders.ExchangeOrder) {
+			if tradeAgg != nil {
+				tradeAgg.OnTrade(o)
+			}
+			if microscalpingSvc != nil {
+				microscalpingSvc.OnTrade(o)
+			}
+			if eoRepo != nil {
+				eoRepo.SaveBatch(ctx, []exchange_orders.ExchangeOrder{o}) //nolint:errcheck
+			}
+		})
+
+		// Провайдер топ-волатильных акций
+		tinkoffTopProvider := tinkoff.NewTopVolatileProvider(
+			tinkoffCfg,
+			tinkoffCfg.TopLimit,
+			log.With(zap.String("component", "tinkoff-top-volatile")),
+		)
+		if len(tinkoffCfg.ExtraSymbols) > 0 {
+			tinkoffTopProvider.WithPinnedSymbols(tinkoffCfg.ExtraSymbols)
+		}
+
+		// При изменении топа — пересылаем новые инструменты стриминговому клиенту
+		tinkoffTopProvider.WithOnSymbolsChanged(func(_, _ []string) {
+			tinkoffClient.NotifySymbolsChanged(tinkoffTopProvider.Tickers())
+		})
+
+		// Первичная загрузка (синхронно — чтобы клиент сразу стартовал с данными)
+		if err := tinkoffTopProvider.Fetch(ctx); err != nil {
+			log.Warn("tinkoff top volatile: initial fetch failed", zap.Error(err))
+		} else {
+			log.Info("tinkoff top volatile: loaded", zap.Strings("symbols", tinkoffTopProvider.Symbols()))
+			tinkoffClient.NotifySymbolsChanged(tinkoffTopProvider.Tickers())
+		}
+
+		// Периодическое обновление топа
+		go tinkoffTopProvider.Run(ctx, time.Duration(alertCfg.RefreshIntervalMin)*time.Minute)
+
+		// REST-клиент для торговли (опционально)
+		if tinkoffCfg.TradeEnabled {
+			if tinkoffCfg.AccountID == "" {
+				log.Fatal("tinkoff trade enabled but TINKOFF_ACCOUNT_ID is empty")
+			}
+			tinkoffRest, err := tinkoff.NewRestClient(ctx, tinkoffCfg, log.With(zap.String("component", "tinkoff-rest")))
+			if err != nil {
+				log.Fatal("tinkoff rest client failed", zap.Error(err))
+			}
+			_ = tinkoffRest // подключить к стратегиям при необходимости
+			log.Info("tinkoff rest client initialized")
+		}
+
+		log.Info("starting tinkoff")
+		go func() {
+			if err := tinkoffClient.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("tinkoff client stopped", zap.Error(err))
+			}
+		}()
+	} else {
+		log.Info("tinkoff disabled (TINKOFF_ENABLED=false)")
 	}
 
 	if !anyExchangeEnabled {
