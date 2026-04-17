@@ -29,6 +29,7 @@ import (
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/microscalping"
+	tinkoff_daytrading "github.com/osman/bot-traider/internal/trade_strategies/tinkoff_daytrading"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -437,15 +438,45 @@ func main() {
 
 		// REST-клиент для торговли (опционально)
 		if tinkoffCfg.TradeEnabled {
-			if tinkoffCfg.AccountID == "" {
+			if tinkoffCfg.AccountID == "" && !tinkoffCfg.Sandbox {
 				log.Fatal("tinkoff trade enabled but TINKOFF_ACCOUNT_ID is empty")
 			}
 			tinkoffRest, err := tinkoff.NewRestClient(ctx, tinkoffCfg, log.With(zap.String("component", "tinkoff-rest")))
 			if err != nil {
 				log.Fatal("tinkoff rest client failed", zap.Error(err))
 			}
-			_ = tinkoffRest // подключить к стратегиям при необходимости
+			restClients["tinkoff"] = tinkoffRest
 			log.Info("tinkoff rest client initialized")
+		}
+
+		// --- Стратегия дейтрейдинга Тинькофф ---
+		daytradingSvc := tinkoff_daytrading.New(
+			ctx,
+			tradeSvc,
+			tinkoffTopProvider.Symbols(),
+			tgNotifier,
+			tradesThreadID,
+			log.With(zap.String("component", "tinkoff-daytrading")),
+		)
+		if daytradingSvc != nil {
+			tinkoffClient.WithOnTrade(func(o exchange_orders.ExchangeOrder) {
+				if tradeAgg != nil {
+					tradeAgg.OnTrade(o)
+				}
+				if microscalpingSvc != nil {
+					microscalpingSvc.OnTrade(o)
+				}
+				if eoRepo != nil {
+					eoRepo.SaveBatch(ctx, []exchange_orders.ExchangeOrder{o}) //nolint:errcheck
+				}
+				daytradingSvc.OnTrade(o)
+			})
+			tinkoffClient.WithOnOrderBook(daytradingSvc.OnOrderBook)
+			// Переопределяем хук топа: пересылаем инструменты клиенту + обновляем символы стратегии
+			tinkoffTopProvider.WithOnSymbolsChanged(func(added, removed []string) {
+				tinkoffClient.NotifySymbolsChanged(tinkoffTopProvider.Tickers())
+				daytradingSvc.OnSymbolsChanged(added, removed)
+			})
 		}
 
 		log.Info("starting tinkoff")

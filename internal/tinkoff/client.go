@@ -24,9 +24,10 @@ type Client struct {
 	config *Config
 	log    *zap.Logger
 
-	tickerSvc *ticker.TickerService
-	obStore   *orderbook.Store
-	onTrade   func(exchange_orders.ExchangeOrder)
+	tickerSvc   *ticker.TickerService
+	obStore     *orderbook.Store
+	onTrade     func(exchange_orders.ExchangeOrder)
+	onOrderBook func(*orderbook.OrderBook)
 
 	mu          sync.RWMutex
 	instruments []VolatileTicker // текущий список инструментов
@@ -47,6 +48,11 @@ func NewClient(cfg *Config, log *zap.Logger, tickerSvc *ticker.TickerService, ob
 // WithOnTrade устанавливает хук, вызываемый при каждой входящей сделке.
 func (c *Client) WithOnTrade(fn func(exchange_orders.ExchangeOrder)) {
 	c.onTrade = fn
+}
+
+// WithOnOrderBook устанавливает хук, вызываемый при каждом обновлении стакана.
+func (c *Client) WithOnOrderBook(fn func(*orderbook.OrderBook)) {
+	c.onOrderBook = fn
 }
 
 // NotifySymbolsChanged обновляет список инструментов и перезапускает стрим.
@@ -250,6 +256,22 @@ func (c *Client) consumeOrderBooks(ctx context.Context, ch <-chan *pb.OrderBook,
 
 			lb := c.obStore.GetOrCreate(sym)
 			lb.Init(bids, asks, updateID, c.log)
+
+			if c.onOrderBook != nil {
+				snap := &orderbook.OrderBook{
+					Symbol:    sym,
+					UpdatedAt: ob.GetTime().AsTime(),
+				}
+				snap.Bids = make([]orderbook.Entry, len(bids))
+				snap.Asks = make([]orderbook.Entry, len(asks))
+				for i, b := range bids {
+					snap.Bids[i] = orderbook.Entry{Price: b[0], Qty: b[1]}
+				}
+				for i, a := range asks {
+					snap.Asks[i] = orderbook.Entry{Price: a[0], Qty: a[1]}
+				}
+				c.onOrderBook(snap)
+			}
 
 			c.log.Debug("tinkoff: orderbook updated",
 				zap.String("symbol", sym),

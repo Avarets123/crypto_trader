@@ -75,8 +75,33 @@ func (p *TopVolatileProvider) Fetch(ctx context.Context) error {
 }
 
 // Run запускает периодическое обновление топа. Блокирует до ctx.Done().
-// Fetch должен быть вызван до Run.
+// Fetch должен быть вызван до Run. Если после Fetch список пустой (ошибка при старте),
+// Run пытается загрузить данные с backoff-ом (5s, 10s, 20s … до 60s) до успеха.
 func (p *TopVolatileProvider) Run(ctx context.Context, interval time.Duration) {
+	// Ретрай начальной загрузки если tickers пустой
+	retryWait := 5 * time.Second
+	for {
+		p.mu.RLock()
+		empty := len(p.tickers) == 0
+		p.mu.RUnlock()
+		if !empty {
+			break
+		}
+		p.log.Info("tinkoff top volatile: retrying initial fetch", zap.Duration("wait", retryWait))
+		select {
+		case <-ctx.Done():
+			p.stop()
+			return
+		case <-time.After(retryWait):
+		}
+		if err := p.refresh(ctx); err != nil {
+			p.log.Warn("tinkoff top volatile: retry fetch failed", zap.Error(err))
+		}
+		if retryWait < 60*time.Second {
+			retryWait *= 2
+		}
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -364,14 +389,13 @@ func (p *TopVolatileProvider) filterPinned(removed []string) []string {
 }
 
 // createSDKClient создаёт SDK-клиент для Т-Инвестиции.
+// Всегда использует production-endpoint: InstrumentsService и MarketDataService
+// возвращают одинаковые данные для sandbox и prod; sandbox-endpoint не поддерживает
+// большие ответы GetShares (unexpected EOF).
 func (p *TopVolatileProvider) createSDKClient(ctx context.Context) (*investgo.Client, error) {
-	endpoint := "invest-public-api.tinkoff.ru:443"
-	if p.cfg.Sandbox {
-		endpoint = "sandbox-invest-public-api.tinkoff.ru:443"
-	}
 	sdkCfg := investgo.Config{
 		Token:    p.cfg.Token,
-		EndPoint: endpoint,
+		EndPoint: "invest-public-api.tinkoff.ru:443",
 		AppName:  "bot-traider",
 	}
 	return investgo.NewClient(ctx, sdkCfg, &zapLogger{p.log})

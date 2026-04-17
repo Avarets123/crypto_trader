@@ -33,7 +33,8 @@ type instrumentInfo struct {
 type RestClient struct {
 	cfg       *Config
 	log       *zap.Logger
-	sdkClient *investgo.Client
+	sdkClient *investgo.Client // для ордеров/аккаунта (sandbox или prod)
+	instClient *investgo.Client // для InstrumentsService — всегда prod-endpoint
 
 	mu    sync.RWMutex
 	cache map[string]instrumentInfo // ticker → {UID, LotSize}
@@ -57,24 +58,42 @@ func NewRestClient(ctx context.Context, cfg *Config, log *zap.Logger) (*RestClie
 		return nil, fmt.Errorf("tinkoff rest: create sdk client: %w", err)
 	}
 
+	// Отдельный клиент для InstrumentsService — sandbox-endpoint не поддерживает
+	// большие ответы (unexpected EOF на FindInstrument/ShareByUid)
+	instSdkClient, err := investgo.NewClient(ctx, investgo.Config{
+		Token:    cfg.Token,
+		EndPoint: "invest-public-api.tinkoff.ru:443",
+		AppName:  "bot-traider",
+	}, &zapLogger{log})
+	if err != nil {
+		sdkClient.Stop() //nolint:errcheck
+		return nil, fmt.Errorf("tinkoff rest: create instruments sdk client: %w", err)
+	}
+
 	c := &RestClient{
-		cfg:       cfg,
-		log:       log,
-		sdkClient: sdkClient,
-		cache:     make(map[string]instrumentInfo),
+		cfg:        cfg,
+		log:        log,
+		sdkClient:  sdkClient,
+		instClient: instSdkClient,
+		cache:      make(map[string]instrumentInfo),
+	}
+
+	stopAll := func() {
+		sdkClient.Stop()     //nolint:errcheck
+		instSdkClient.Stop() //nolint:errcheck
 	}
 
 	if cfg.Sandbox && cfg.AccountID == "" {
 		accountID, err := c.resolveSandboxAccount()
 		if err != nil {
-			sdkClient.Stop() //nolint:errcheck
+			stopAll()
 			return nil, fmt.Errorf("tinkoff rest: sandbox account: %w", err)
 		}
 		cfg.AccountID = accountID
 	}
 
 	if err := c.checkAccount(); err != nil {
-		sdkClient.Stop() //nolint:errcheck
+		stopAll()
 		return nil, fmt.Errorf("tinkoff rest: %w", err)
 	}
 
@@ -85,9 +104,10 @@ func NewRestClient(ctx context.Context, cfg *Config, log *zap.Logger) (*RestClie
 	return c, nil
 }
 
-// Stop закрывает SDK-клиент.
+// Stop закрывает SDK-клиенты.
 func (c *RestClient) Stop() {
-	c.sdkClient.Stop() //nolint:errcheck
+	c.sdkClient.Stop()  //nolint:errcheck
+	c.instClient.Stop() //nolint:errcheck
 }
 
 // resolveSandboxAccount возвращает ID sandbox-счёта:
@@ -204,7 +224,7 @@ func (c *RestClient) resolveInstrument(symbol string) (instrumentInfo, error) {
 		return info, nil
 	}
 
-	instClient := c.sdkClient.NewInstrumentsServiceClient()
+	instClient := c.instClient.NewInstrumentsServiceClient()
 	findResp, err := instClient.FindInstrument(symbol)
 	if err != nil {
 		return instrumentInfo{}, fmt.Errorf("tinkoff: find instrument %q: %w", symbol, err)
@@ -254,8 +274,9 @@ func (c *RestClient) resolveInstrument(symbol string) (instrumentInfo, error) {
 }
 
 // lastPrice возвращает последнюю цену инструмента через MarketDataService.
+// Использует prod-endpoint (instClient) — sandbox не всегда возвращает актуальные цены.
 func (c *RestClient) lastPrice(uid string) (float64, error) {
-	mdClient := c.sdkClient.NewMarketDataServiceClient()
+	mdClient := c.instClient.NewMarketDataServiceClient()
 	resp, err := mdClient.GetLastPrices([]string{uid})
 	if err != nil {
 		return 0, fmt.Errorf("tinkoff get last price: %w", err)
@@ -307,6 +328,10 @@ func (c *RestClient) PlaceMarketOrder(ctx context.Context, symbol, side string, 
 	} else {
 		lots = qtyToLots(qty, info.LotSize)
 	}
+	if lots <= 0 {
+		return exchange.OrderResult{}, fmt.Errorf("tinkoff place market order: lots=0 for %q (price=0 or TradeAmountRUB too small)", symbol)
+	}
+
 	direction := sideToDirection(side)
 
 	c.log.Info("tinkoff: placing market order",
