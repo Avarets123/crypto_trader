@@ -6,4 +6,5 @@ type VolatileTicker struct {
 	UID            string  // instrument UID для gRPC подписок
 	Currency       string  // валюта котирования (rub, usd)
 	PriceChangePct float64 // % изменение цены за торговую сессию
+	LastPrice      float64 // последняя цена
 }

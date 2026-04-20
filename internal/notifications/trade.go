@@ -45,24 +45,26 @@ func (n *TradeNotifier) OnTradeCloseError(t *trade.Trade, err error) {
 }
 
 func formatTradeOpenMsg(t *trade.Trade) string {
+	cur := CurrencyLabel(t.TradeExchange)
 	var sb strings.Builder
 	sb.WriteString("🟢 <b>Сделка открыта</b>\n")
 	fmt.Fprintf(&sb, "Стратегия: %s\n", strategyLabel(t.Strategy))
 	fmt.Fprintf(&sb, "Символ:   <b>%s</b>\n", t.Symbol)
 	fmt.Fprintf(&sb, "Биржа:    %s [%s]\n", t.TradeExchange, t.Mode)
-	fmt.Fprintf(&sb, "Цена входа: <b>%s</b>\n", FormatPrice(t.EntryPrice))
+	fmt.Fprintf(&sb, "Цена входа: <b>%s %s</b>\n", FormatPrice(t.EntryPrice), cur)
 	fmt.Fprintf(&sb, "Количество: %s\n", formatQty(t.Qty))
-	fmt.Fprintf(&sb, "Сумма:      <b>%.2f USDT</b>\n", t.EntryPrice*t.Qty)
+	fmt.Fprintf(&sb, "Сумма:      <b>%.2f %s</b>\n", t.EntryPrice*t.Qty, cur)
 	if t.TargetPrice != nil {
-		fmt.Fprintf(&sb, "Цель (TP): %s\n", FormatPrice(*t.TargetPrice))
+		fmt.Fprintf(&sb, "Цель (TP): %s %s\n", FormatPrice(*t.TargetPrice), cur)
 	}
 	if t.StopLossPrice != nil {
-		fmt.Fprintf(&sb, "Стоп (SL): %s\n", FormatPrice(*t.StopLossPrice))
+		fmt.Fprintf(&sb, "Стоп (SL): %s %s\n", FormatPrice(*t.StopLossPrice), cur)
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
 
 func formatTradeCloseMsg(t *trade.Trade) string {
+	cur := CurrencyLabel(t.TradeExchange)
 	emoji, reason := exitLabel(t.ExitReason)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s <b>Сделка закрыта — %s</b>\n", emoji, reason)
@@ -73,17 +75,17 @@ func formatTradeCloseMsg(t *trade.Trade) string {
 	if t.ClosedAt != nil {
 		fmt.Fprintf(&sb, "Удержание: %s\n", formatDuration(t.ClosedAt.Sub(t.OpenedAt)))
 	}
-	fmt.Fprintf(&sb, "Вход → Выход: %s → %s\n", FormatPrice(t.EntryPrice), exitPrice(t))
+	fmt.Fprintf(&sb, "Вход → Выход: %s → %s %s\n", FormatPrice(t.EntryPrice), exitPrice(t), cur)
 	fmt.Fprintf(&sb, "Количество: %s\n", formatQty(t.Qty))
 	if t.CommissionUSDT != nil {
-		fmt.Fprintf(&sb, "Комиссия: %s USDT\n", FormatPrice(*t.CommissionUSDT))
+		fmt.Fprintf(&sb, "Комиссия: %s %s\n", FormatPrice(*t.CommissionUSDT), cur)
 	}
 	if t.PnlUSDT != nil {
-		fmt.Fprintf(&sb, "PnL: <b>%s USDT</b>", formatPnl(*t.PnlUSDT))
+		fmt.Fprintf(&sb, "PnL: <b>%s %s</b>", formatPnl(*t.PnlUSDT), cur)
 		invested := t.EntryPrice * t.Qty
 		if invested > 0 {
 			pnlPct := *t.PnlUSDT / invested * 100
-			fmt.Fprintf(&sb, " (<b>%s%%</b>)", formatChangePct(pnlPct))
+			fmt.Fprintf(&sb, " (<b>%s</b>)", formatChangePct(pnlPct))
 		}
 		sb.WriteString("\n")
 	}

@@ -267,6 +267,7 @@ func (p *TopVolatileProvider) fetchTopVolatile(
 			UID:            s.uid,
 			Currency:       s.currency,
 			PriceChangePct: changePct,
+			LastPrice:      last,
 		})
 	}
 

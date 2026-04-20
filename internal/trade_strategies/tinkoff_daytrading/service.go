@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -318,8 +319,21 @@ func (s *Service) openPosition(symbol, side string, snap MetricSnapshot) {
 		zap.Int64("trade_id", id),
 	)
 	if s.tg != nil {
-		msg := fmt.Sprintf("<b>🟢 Tinkoff DayTrading</b>\n<b>%s</b> %s\nЦена: %.4f | Imbalance: %.2f | Δ1m: %.0f",
-			symbol, side, entryPrice, snap.Imbalance, snap.Delta1m)
+		sideEmoji, sideLabel := "🟢", "ЛОНГ"
+		if side == "sell" {
+			sideEmoji, sideLabel = "🔴", "ШОРТ"
+		}
+		deltaSign := "+"
+		if snap.Delta1m < 0 {
+			deltaSign = ""
+		}
+		msg := fmt.Sprintf(
+			"%s <b>Tinkoff DayTrading — %s</b>\n"+
+				"📊 <b>%s</b> | Вход: <b>%.2f ₽</b>\n"+
+				"Дисбаланс: %.2f | Объём 1м: %s%.0f ₽ | Давление: %.0f%%",
+			sideEmoji, sideLabel, symbol, entryPrice,
+			snap.Imbalance, deltaSign, snap.Delta1m, snap.DeltaChange*100,
+		)
 		s.tg.SendToThread(s.ctx, msg, s.tgThread)
 	}
 }
@@ -349,14 +363,44 @@ func (s *Service) closePosition(symbol, reason string, exitPrice float64) {
 	}
 	side := st.side
 	entryPrice := st.entryPrice
+	openedAt := st.openedAt
+	qty := st.qty
 	st.mu.Unlock()
 
-	if err := s.tradeSvc.CloseTrade(s.ctx, tradeID, exitPrice, reason); err != nil {
+	const closeMaxAttempts = 5
+	var closeErr error
+	for attempt := 0; attempt < closeMaxAttempts; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt) * 3 * time.Second
+			s.log.Warn("tinkoff daytrading: close retry",
+				zap.String("symbol", symbol),
+				zap.Int("attempt", attempt+1),
+				zap.Duration("delay", delay),
+			)
+			time.Sleep(delay)
+		}
+		closeErr = s.tradeSvc.CloseTrade(s.ctx, tradeID, exitPrice, reason)
+		if closeErr == nil {
+			break
+		}
 		s.log.Error("tinkoff daytrading: close trade failed",
 			zap.String("symbol", symbol),
 			zap.Int64("trade_id", tradeID),
 			zap.String("reason", reason),
-			zap.Error(err),
+			zap.Int("attempt", attempt+1),
+			zap.Error(closeErr),
+		)
+	}
+	if closeErr != nil {
+		// После всех попыток сбрасываем позицию чтобы стратегия не зависла
+		st.mu.Lock()
+		st.inPosition = false
+		st.cooldownUntil = time.Now().Add(cooldownAfterClose)
+		st.mu.Unlock()
+		s.log.Error("tinkoff daytrading: close trade exhausted all attempts, position reset",
+			zap.String("symbol", symbol),
+			zap.Int64("trade_id", tradeID),
+			zap.Error(closeErr),
 		)
 		return
 	}
@@ -385,12 +429,23 @@ func (s *Service) closePosition(symbol, reason string, exitPrice float64) {
 		zap.Float64("pnl_pct", pnlPct),
 	)
 	if s.tg != nil {
-		sign := "+"
+		emoji, reasonLabel := exitEmoji(reason)
+		holdStr := formatHold(time.Since(openedAt))
+		pnlSign := "+"
 		if pnlPct < 0 {
-			sign = ""
+			pnlSign = ""
 		}
-		msg := fmt.Sprintf("<b>🔴 Tinkoff DayTrading закрыто</b>\n<b>%s</b> %s | %s\nВход: %.4f → Выход: %.4f (%s%.2f%%)",
-			symbol, side, reason, entryPrice, exitPrice, sign, pnlPct)
+		pnlRub := (exitPrice - entryPrice) * qty
+		if side == "sell" {
+			pnlRub = (entryPrice - exitPrice) * qty
+		}
+		msg := fmt.Sprintf(
+			"%s <b>Tinkoff DayTrading — %s</b>\n"+
+				"📊 <b>%s</b> | %.2f → %.2f ₽\n"+
+				"PnL: <b>%s%.2f ₽</b> (%s%.2f%%) | Держание: %s",
+			emoji, reasonLabel, symbol, entryPrice, exitPrice,
+			pnlSign, pnlRub, pnlSign, pnlPct, holdStr,
+		)
 		s.tg.SendToThread(s.ctx, msg, s.tgThread)
 	}
 }
@@ -450,4 +505,33 @@ func pruneRecentTrades(trades map[float64]time.Time, now time.Time) {
 func parsePrice(s string) float64 {
 	f, _ := strconv.ParseFloat(s, 64)
 	return f
+}
+
+func exitEmoji(reason string) (emoji, label string) {
+	switch reason {
+	case "tp":
+		return "✅", "TP"
+	case "sl":
+		return "🛑", "SL"
+	case "sl_wall":
+		return "🛑", "SL (стена)"
+	case "timeout":
+		return "⏱", "Timeout"
+	default:
+		return "🔴", strings.ToUpper(reason)
+	}
+}
+
+func formatHold(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dч %dм", h, m)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dм %dс", m, s)
+	}
+	return fmt.Sprintf("%dс", s)
 }

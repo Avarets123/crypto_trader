@@ -29,9 +29,19 @@ func strategyLabel(strategy string) string {
 		return "🚀 Momentum"
 	case "microscalping":
 		return "🌊 Microscalping"
+	case "tinkoff_daytrading":
+		return "📊 Tinkoff DayTrading"
 	default:
 		return strategy
 	}
+}
+
+// CurrencyLabel возвращает символ валюты для биржи: ₽ для tinkoff, USDT для остальных.
+func CurrencyLabel(exchange string) string {
+	if exchange == "tinkoff" {
+		return "₽"
+	}
+	return "USDT"
 }
 
 func exitLabel(reason string) (emoji, label string) {

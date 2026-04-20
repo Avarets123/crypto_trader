@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -430,6 +431,8 @@ func main() {
 		// Периодическое обновление топа
 		go tinkoffTopProvider.Run(ctx, time.Duration(alertCfg.RefreshIntervalMin)*time.Minute)
 
+		go sendTopVolatileTinkoff(ctx, log, tinkoffTopProvider.Tickers(), tgNotifier)
+
 		// REST-клиент для торговли (опционально)
 		if tinkoffCfg.TradeEnabled {
 			if tinkoffCfg.AccountID == "" && !tinkoffCfg.Sandbox {
@@ -588,6 +591,46 @@ func sendTopVolatileKucoin(ctx context.Context, log *zap.Logger, rest *kucoin.Re
 
 	tg.SendToThread(ctx, msg, newsThreadID)
 	log.Info("kucoin top volatile sent to telegram")
+}
+
+// sendTopVolatileTinkoff отправляет топ волатильных акций Т-Инвестиции в Telegram.
+func sendTopVolatileTinkoff(ctx context.Context, log *zap.Logger, tickers []tinkoff.VolatileTicker, tg *telegram.Notifier) {
+	newsThreadID := sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0)
+
+	if len(tickers) == 0 {
+		log.Warn("tinkoff top volatile: list empty, skipping notification")
+		return
+	}
+
+	top := tickers
+	if len(top) > 10 {
+		top = top[:10]
+	}
+
+	msg := "📊 <b>Топ волатильных акций (Т-Инвестиции, сессия)</b>\n\n"
+	for _, t := range top {
+		arrow := "📈"
+		if t.PriceChangePct < 0 {
+			arrow = "📉"
+		}
+		sign := "+"
+		if t.PriceChangePct < 0 {
+			sign = ""
+		}
+		cur := "₽"
+		if t.Currency != "" && t.Currency != "rub" {
+			cur = strings.ToUpper(t.Currency)
+		}
+		priceStr := ""
+		if t.LastPrice > 0 {
+			priceStr = fmt.Sprintf("  <code>%s %s</code>", notifications.FormatPrice(t.LastPrice), cur)
+		}
+		msg += fmt.Sprintf("%s <b>%s</b>  %s%.2f%%%s\n",
+			arrow, t.Symbol, sign, t.PriceChangePct, priceStr)
+	}
+
+	tg.SendToThread(ctx, msg, newsThreadID)
+	log.Info("tinkoff top volatile sent to telegram", zap.Int("count", len(top)))
 }
 
 func formatOrderBook(ob *orderbook.OrderBook) string {
