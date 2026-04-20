@@ -36,16 +36,19 @@ type generateResponse struct {
 	Response string `json:"response"`
 }
 
-// Summarize переводит заголовок + описание новости на русский язык,
-// возвращает одно предложение с хештегами упомянутых криптовалют в начале.
+// Summarize анализирует новость на предмет роста/падения криптовалют.
+// Возвращает строку вида "UP:BTC,ETH", "DOWN:SOL", "UP:BTC|DOWN:ETH" или "NONE".
 func (c *Client) Summarize(ctx context.Context, title, description string) (string, error) {
 	prompt := fmt.Sprintf(
-		"You are a crypto news summarizer.\n"+
-			"Task:\n"+
-			"1. Identify all specific cryptocurrencies mentioned (e.g. Bitcoin→#BTC, Ethereum→#ETH, Solana→#SOL, etc.).\n"+
-			"2. If any cryptocurrencies are found, start the output with their hashtags separated by spaces (e.g. \"#BTC #ETH \").\n"+
-			"3. Translate the news to Russian and summarize in exactly ONE sentence.\n"+
-			"4. Return ONLY the result: optional hashtags followed by the single Russian sentence. No extra text, no labels, no quotes.\n\n"+
+		"You are a crypto market signal detector.\n"+
+			"Task: analyze the news and detect if it directly or indirectly signals price movement for any specific cryptocurrency.\n"+
+			"Rules:\n"+
+			"1. Use ticker symbols (BTC, ETH, SOL, etc.). Bitcoin→BTC, Ethereum→ETH, etc.\n"+
+			"2. If news suggests price growth or bullish outlook for coins, output: UP:<TICKER1>,<TICKER2>\n"+
+			"3. If news suggests price decline or bearish outlook for coins, output: DOWN:<TICKER1>,<TICKER2>\n"+
+			"4. If both signals exist for different coins, output: UP:<TICKERS>|DOWN:<TICKERS>\n"+
+			"5. If no clear price signal for any specific coin, output: NONE\n"+
+			"6. Return ONLY the result string. No explanation, no punctuation, no extra text.\n\n"+
 			"Title: %s\nContent: %s",
 		title, description,
 	)

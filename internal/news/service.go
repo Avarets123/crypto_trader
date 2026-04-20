@@ -3,6 +3,7 @@ package news
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -144,29 +145,47 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		zap.Int("total_fetched", len(allArticles)),
 	)
 
-	// Суммаризируем только новые статьи, затем отправляем в Telegram
+	// Анализируем только новые статьи, группируем сигналы по источнику
+	if s.summarizer == nil || s.notifier == nil {
+		return
+	}
+
+	// source → список строк сигналов
+	sourceSignals := make(map[string][]string)
+	// сохраняем порядок источников
+	var sourceOrder []string
+	seenSource := make(map[string]bool)
+
 	for i := range newArticles {
 		a := &newArticles[i]
-		if s.summarizer != nil {
-			summary, err := s.summarizer.Summarize(ctx, a.Title, a.Description)
-			if err != nil {
-				s.log.Warn("news: ollama summarize failed",
-					zap.String("title", a.Title),
-					zap.Error(err),
-				)
-			} else {
-				a.Summary = summary
-				if err := s.repo.UpdateSummary(ctx, a.GUID, summary); err != nil {
-					s.log.Warn("news: failed to update summary",
-						zap.String("guid", a.GUID),
-						zap.Error(err),
-					)
-				}
-			}
+		signal, err := s.summarizer.Summarize(ctx, a.Title, a.Description)
+		if err != nil {
+			s.log.Warn("news: ollama analyze failed",
+				zap.String("title", a.Title),
+				zap.Error(err),
+			)
+			continue
 		}
-		if s.notifier != nil {
-			go s.notifier.SendToThread(ctx, formatNewsMsg(*a), s.newsThreadID)
+		signal = strings.TrimSpace(signal)
+		s.log.Info("news: ollama signal", zap.String("signal", signal), zap.String("title", a.Title))
+		if signal == "" || signal == "NONE" {
+			continue
 		}
+		line := formatSignalMsg(signal, a.Link)
+		if line == "" {
+			continue
+		}
+		if !seenSource[a.Source] {
+			seenSource[a.Source] = true
+			sourceOrder = append(sourceOrder, a.Source)
+		}
+		sourceSignals[a.Source] = append(sourceSignals[a.Source], line)
+	}
+
+	for _, src := range sourceOrder {
+		lines := sourceSignals[src]
+		msg := fmt.Sprintf("📰 %s\n%s", src, strings.Join(lines, "\n"))
+		go s.notifier.SendToThread(ctx, msg, s.newsThreadID)
 	}
 }
 
@@ -193,19 +212,21 @@ func (s *Service) Start(ctx context.Context) {
 	}
 }
 
-// formatNewsMsg форматирует сообщение о новой статье для Telegram.
-// Если есть Summary (русское резюме от Ollama) — используется он, иначе fallback на оригинальный Title.
-func formatNewsMsg(a Article) string {
-	pubDate := ""
-	if a.PublishedAt != nil {
-		pubDate = fmt.Sprintf("\n<i>%s</i>", a.PublishedAt.Format("02 Jan 2006 15:04"))
+// formatSignalMsg формирует TG-сообщение из сигнала вида "UP:BTC,ETH", "DOWN:SOL" или "UP:BTC|DOWN:ETH".
+func formatSignalMsg(signal, link string) string {
+	var lines []string
+	for _, part := range strings.Split(signal, "|") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "UP:") {
+			tickers := strings.ReplaceAll(strings.TrimPrefix(part, "UP:"), ",", " ")
+			lines = append(lines, fmt.Sprintf("🟢 %s 📈", tickers))
+		} else if strings.HasPrefix(part, "DOWN:") {
+			tickers := strings.ReplaceAll(strings.TrimPrefix(part, "DOWN:"), ",", " ")
+			lines = append(lines, fmt.Sprintf("🔴 %s 📉", tickers))
+		}
 	}
-	if a.Summary != "" {
-		return fmt.Sprintf("📰 <b>%s</b> — <a href=%q>читать</a>%s\n\n%s",
-			a.Source, a.Link, pubDate, a.Summary,
-		)
+	if len(lines) == 0 {
+		return ""
 	}
-	return fmt.Sprintf("📰 <b>%s</b> — <a href=%q>%s</a>%s",
-		a.Source, a.Link, a.Title, pubDate,
-	)
+	return strings.Join(lines, "\n") + " - " + link
 }
