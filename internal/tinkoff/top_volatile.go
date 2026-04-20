@@ -221,6 +221,9 @@ func (p *TopVolatileProvider) fetchTopVolatile(
 		if !s.GetApiTradeAvailableFlag() || !s.GetBuyAvailableFlag() {
 			continue
 		}
+		if strings.ToLower(s.GetCurrency()) != "rub" {
+			continue
+		}
 		eligible = append(eligible, shareInfo{
 			uid:      s.GetUid(),
 			ticker:   s.GetTicker(),

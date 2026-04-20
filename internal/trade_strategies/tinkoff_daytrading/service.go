@@ -51,15 +51,18 @@ type symbolState struct {
 	recentTrades map[float64]time.Time
 }
 
+const warmupDuration = 5 * time.Minute
+
 // Service — основной сервис стратегии дейтрейдинга Тинькофф.
 type Service struct {
-	mu       sync.RWMutex
-	cfg      Config
-	ctx      context.Context
-	tradeSvc *trade.Service
-	tg       *telegram.Notifier
-	tgThread int
-	log      *zap.Logger
+	mu          sync.RWMutex
+	cfg         Config
+	ctx         context.Context
+	tradeSvc    *trade.Service
+	tg          *telegram.Notifier
+	tgThread    int
+	log         *zap.Logger
+	warmupUntil time.Time
 
 	symbols map[string]*symbolState
 }
@@ -72,14 +75,20 @@ func newService(
 	tgThread int,
 	log *zap.Logger,
 ) *Service {
+	warmupUntil := time.Now().Add(warmupDuration)
+	log.Info("tinkoff daytrading: warmup started, trades blocked",
+		zap.Duration("duration", warmupDuration),
+		zap.Time("until", warmupUntil),
+	)
 	return &Service{
-		cfg:      cfg,
-		ctx:      ctx,
-		tradeSvc: tradeSvc,
-		tg:       tg,
-		tgThread: tgThread,
-		log:      log,
-		symbols:  make(map[string]*symbolState),
+		cfg:         cfg,
+		ctx:         ctx,
+		tradeSvc:    tradeSvc,
+		tg:          tg,
+		tgThread:    tgThread,
+		log:         log,
+		warmupUntil: warmupUntil,
+		symbols:     make(map[string]*symbolState),
 	}
 }
 
@@ -227,6 +236,14 @@ func (s *Service) updateSignalWindow(st *symbolState, snap MetricSnapshot, now t
 }
 
 func (s *Service) checkEntry(symbol string, st *symbolState, snap MetricSnapshot, now time.Time) {
+	if now.Before(s.warmupUntil) {
+		s.log.Debug("tinkoff daytrading: warmup, skipping entry",
+			zap.String("symbol", symbol),
+			zap.Duration("remaining", time.Until(s.warmupUntil)),
+		)
+		return
+	}
+
 	if spreadBlocked(snap) {
 		s.log.Debug("tinkoff daytrading: spread filter blocked",
 			zap.String("symbol", symbol),
