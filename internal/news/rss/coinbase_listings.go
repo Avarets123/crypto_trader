@@ -52,11 +52,12 @@ func FetchCoinbaseListings(ctx context.Context) ([]Item, error) {
 		}
 		link := fmt.Sprintf("https://www.coinbase.com/en/advanced-trade/spot/%s-%s", p.BaseCurrency, p.QuoteCurrency)
 		items = append(items, Item{
-			Source:  "coinbase",
-			GUID:    fmt.Sprintf("coinbase-product-%s", p.ID),
-			Title:   fmt.Sprintf("Coinbase listing: %s", p.ID),
-			Link:    link,
-			Summary: fmt.Sprintf("Coinbase listed %s/%s", p.BaseCurrency, p.QuoteCurrency),
+			Source:    "coinbase",
+			GUID:      fmt.Sprintf("coinbase-product-%s", p.ID),
+			Title:     fmt.Sprintf("Coinbase listing: %s", p.ID),
+			Link:      link,
+			Summary:   fmt.Sprintf("Coinbase listed %s/%s", p.BaseCurrency, p.QuoteCurrency),
+			IsListing: true,
 		})
 	}
 	return items, nil

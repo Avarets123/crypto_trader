@@ -62,6 +62,7 @@ func FetchBybitAnnouncements(ctx context.Context) ([]Item, error) {
 			Link:        a.URL,
 			Summary:     buildSummary(a.Description),
 			PublishedAt: &publishedAt,
+			IsListing:   true,
 		})
 	}
 	return items, nil

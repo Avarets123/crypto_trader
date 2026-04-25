@@ -20,9 +20,10 @@ type TelegramNotifier interface {
 	SendToThread(ctx context.Context, text string, threadID int)
 }
 
-// Summarizer — интерфейс для перевода и суммаризации текста через LLM.
+// Summarizer — интерфейс для анализа новостей и листингов через LLM.
 type Summarizer interface {
 	Summarize(ctx context.Context, title, description string) (string, error)
+	AnalyzeListing(ctx context.Context, title, description string) (string, error)
 }
 
 type fetchFunc func(ctx context.Context) ([]rss.Item, error)
@@ -128,6 +129,7 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 					Link:        it.Link,
 					Description: it.Summary,
 					PublishedAt: it.PublishedAt,
+					IsListing:   it.IsListing,
 				})
 			}
 			mu.Lock()
@@ -141,6 +143,14 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		return
 	}
 
+	// Строим маппинг guid→isListing до SaveBatch, чтобы не потерять флаг
+	isListingByGUID := make(map[string]bool, len(allArticles))
+	for i := range allArticles {
+		if allArticles[i].IsListing {
+			isListingByGUID[allArticles[i].GUID] = true
+		}
+	}
+
 	newArticles, err := s.repo.SaveBatch(ctx, allArticles)
 	if err != nil {
 		s.log.Warn("news: SaveBatch error", zap.Error(err))
@@ -151,7 +161,6 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		zap.Int("total_fetched", len(allArticles)),
 	)
 
-	// Анализируем только новые статьи, группируем сигналы по источнику
 	if s.summarizer == nil || s.notifier == nil {
 		return
 	}
@@ -174,9 +183,12 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		}
 	}
 
-	// source → список строк сигналов
+	// source → блоки для листингов и сигналов новостей
+	listingBlocks := make(map[string][]string)
+	var listingOrder []string
+	seenListing := make(map[string]bool)
+
 	sourceSignals := make(map[string][]string)
-	// сохраняем порядок источников
 	var sourceOrder []string
 	seenSource := make(map[string]bool)
 
@@ -185,6 +197,32 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		if floodSources[a.Source] {
 			continue
 		}
+		a.IsListing = isListingByGUID[a.GUID]
+
+		if a.IsListing {
+			analysis, err := s.summarizer.AnalyzeListing(ctx, a.Title, a.Description)
+			if err != nil {
+				s.log.Warn("news: ollama listing analyze failed",
+					zap.String("title", a.Title),
+					zap.Error(err),
+				)
+				analysis = ""
+			} else {
+				analysis = strings.TrimSpace(analysis)
+				if err := s.repo.UpdateSummary(ctx, a.GUID, analysis); err != nil {
+					s.log.Warn("news: failed to save listing analysis", zap.String("guid", a.GUID), zap.Error(err))
+				}
+			}
+			s.log.Info("news: new listing", zap.String("source", a.Source), zap.String("title", a.Title))
+			block := formatListingBlock(a, analysis)
+			if !seenListing[a.Source] {
+				seenListing[a.Source] = true
+				listingOrder = append(listingOrder, a.Source)
+			}
+			listingBlocks[a.Source] = append(listingBlocks[a.Source], block)
+			continue
+		}
+
 		signal, err := s.summarizer.Summarize(ctx, a.Title, a.Description)
 		if err != nil {
 			s.log.Warn("news: ollama analyze failed",
@@ -210,6 +248,13 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 			sourceOrder = append(sourceOrder, a.Source)
 		}
 		sourceSignals[a.Source] = append(sourceSignals[a.Source], line)
+	}
+
+	for _, src := range listingOrder {
+		exchange := strings.ToUpper(src[:1]) + src[1:]
+		header := fmt.Sprintf("🚀 <b>Новые листинги — %s</b>", exchange)
+		msg := header + "\n\n" + strings.Join(listingBlocks[src], "\n\n")
+		go s.notifier.SendToThread(ctx, msg, s.newsThreadID)
 	}
 
 	for _, src := range sourceOrder {
@@ -240,6 +285,23 @@ func (s *Service) Start(ctx context.Context) {
 			s.FetchAndSave(ctx)
 		}
 	}
+}
+
+// formatListingBlock формирует блок одного листинга внутри группового сообщения.
+func formatListingBlock(a *Article, analysis string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📌 %s\n", a.Title))
+
+	if a.PublishedAt != nil {
+		sb.WriteString(fmt.Sprintf("🗓 %s UTC\n", a.PublishedAt.Format("02.01.2006 15:04")))
+	}
+
+	if analysis != "" {
+		sb.WriteString(fmt.Sprintf("🤖 %s\n", analysis))
+	}
+
+	sb.WriteString(fmt.Sprintf("🔗 <a href=%q>Подробнее</a>", a.Link))
+	return sb.String()
 }
 
 // formatSignalMsg формирует TG-сообщение из сигнала вида "UP:BTC,ETH", "DOWN:SOL" или "UP:BTC|DOWN:ETH".

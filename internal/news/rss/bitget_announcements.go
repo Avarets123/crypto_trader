@@ -68,6 +68,7 @@ func FetchBitgetAnnouncements(ctx context.Context) ([]Item, error) {
 			Link:        a.AnnURL,
 			Summary:     a.AnnTitle,
 			PublishedAt: publishedAt,
+			IsListing:   true,
 		})
 	}
 	return items, nil

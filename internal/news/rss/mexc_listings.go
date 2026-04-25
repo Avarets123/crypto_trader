@@ -58,11 +58,12 @@ func FetchMEXCListings(ctx context.Context) ([]Item, error) {
 			title = fmt.Sprintf("MEXC listing: %s (%s)", s.Symbol, s.FullName)
 		}
 		items = append(items, Item{
-			Source:  "mexc",
-			GUID:    fmt.Sprintf("mexc-symbol-%s", s.Symbol),
-			Title:   title,
-			Link:    link,
-			Summary: fmt.Sprintf("MEXC listed %s/%s", s.BaseAsset, s.QuoteAsset),
+			Source:    "mexc",
+			GUID:      fmt.Sprintf("mexc-symbol-%s", s.Symbol),
+			Title:     title,
+			Link:      link,
+			Summary:   fmt.Sprintf("MEXC listed %s/%s", s.BaseAsset, s.QuoteAsset),
+			IsListing: true,
 		})
 	}
 	return items, nil

@@ -79,6 +79,7 @@ func FetchDexScreenerListings(ctx context.Context) ([]Item, error) {
 			Link:        p.URL,
 			Summary:     buildSummary(summary),
 			PublishedAt: publishedAt,
+			IsListing:   true,
 		})
 	}
 	return items, nil

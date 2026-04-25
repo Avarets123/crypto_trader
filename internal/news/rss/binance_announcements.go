@@ -67,6 +67,7 @@ func FetchBinanceAnnouncements(ctx context.Context) ([]Item, error) {
 				Link:        link,
 				Summary:     a.Title,
 				PublishedAt: &publishedAt,
+				IsListing:   true,
 			})
 		}
 	}

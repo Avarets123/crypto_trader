@@ -36,6 +36,56 @@ type generateResponse struct {
 	Response string `json:"response"`
 }
 
+// AnalyzeListing анализирует объявление о новом листинге и возвращает краткий
+// текстовый вывод на русском языке (2-3 предложения): что за токен и чего ожидать.
+func (c *Client) AnalyzeListing(ctx context.Context, title, description string) (string, error) {
+	prompt := fmt.Sprintf(
+		"You are a crypto market analyst. A new token listing has been announced on an exchange.\n"+
+			"Write a brief analysis in Russian (1-2 sentences):\n"+
+			"1. What is this token or project?\n"+
+			"2. What price action can be expected after the listing?\n"+
+			"Return ONLY the analysis text in Russian. No headers, no bullet points, no extra words.\n\n"+
+			"Title: %s\nDescription: %s",
+		title, description,
+	)
+
+	body, err := json.Marshal(generateRequest{
+		Model:  c.cfg.Model,
+		Prompt: prompt,
+		Stream: false,
+	})
+	if err != nil {
+		return "", fmt.Errorf("ollama: marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.URL+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("ollama: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama: http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ollama: unexpected status %d", resp.StatusCode)
+	}
+
+	var result generateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("ollama: decode response: %w", err)
+	}
+
+	summary := strings.TrimSpace(result.Response)
+	if summary == "" {
+		return "", fmt.Errorf("ollama: empty response")
+	}
+	return summary, nil
+}
+
 // Summarize анализирует новость на предмет роста/падения криптовалют.
 // Возвращает строку вида "UP:BTC,ETH", "DOWN:SOL", "UP:BTC|DOWN:ETH" или "NONE".
 func (c *Client) Summarize(ctx context.Context, title, description string) (string, error) {

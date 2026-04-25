@@ -13,4 +13,5 @@ type Article struct {
 	Summary     string
 	PublishedAt *time.Time
 	CreatedAt   time.Time
+	IsListing   bool
 }

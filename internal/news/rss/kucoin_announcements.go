@@ -64,6 +64,7 @@ func FetchKuCoinAnnouncements(ctx context.Context) ([]Item, error) {
 			Link:        a.AnnURL,
 			Summary:     a.AnnDesc,
 			PublishedAt: &publishedAt,
+			IsListing:   true,
 		})
 	}
 	return items, nil

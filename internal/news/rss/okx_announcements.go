@@ -72,6 +72,7 @@ func FetchOKXAnnouncements(ctx context.Context) ([]Item, error) {
 				Link:        a.URL,
 				Summary:     a.Title,
 				PublishedAt: &publishedAt,
+				IsListing:   true,
 			})
 		}
 	}

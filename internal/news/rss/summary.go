@@ -16,6 +16,7 @@ type Item struct {
 	Link        string
 	Summary     string
 	PublishedAt *time.Time
+	IsListing   bool
 }
 
 // buildSummary удаляет HTML-теги и обрезает до 300 символов.
