@@ -293,7 +293,7 @@ func formatListingBlock(a *Article, analysis string) string {
 	sb.WriteString(fmt.Sprintf("📌 %s\n", a.Title))
 
 	if a.PublishedAt != nil {
-		sb.WriteString(fmt.Sprintf("🗓 %s UTC\n", a.PublishedAt.Format("02.01.2006 15:04")))
+		sb.WriteString(fmt.Sprintf("📅 Объявлено: %s UTC\n", a.PublishedAt.Format("02.01.2006 15:04")))
 	}
 
 	if analysis != "" {
