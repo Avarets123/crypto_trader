@@ -88,6 +88,12 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		{"theblock", rss.FetchTheBlock},
 		{"binance", rss.FetchBinanceAnnouncements},
 		{"kucoin", rss.FetchKuCoinAnnouncements},
+		{"bybit", rss.FetchBybitAnnouncements},
+		{"okx", rss.FetchOKXAnnouncements},
+		{"bitget", rss.FetchBitgetAnnouncements},
+		{"coinbase", rss.FetchCoinbaseListings},
+		{"mexc", rss.FetchMEXCListings},
+		{"dexscreener", rss.FetchDexScreenerListings},
 	}
 
 	var (
@@ -150,6 +156,24 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		return
 	}
 
+	// Защита от первого запуска: источники без дат (coinbase, mexc) могут вернуть
+	// тысячи "новых" записей сразу — сохраняем в БД, но в Telegram не шлём.
+	const maxNewPerSource = 20
+	newCountBySource := make(map[string]int)
+	for i := range newArticles {
+		newCountBySource[newArticles[i].Source]++
+	}
+	floodSources := make(map[string]bool)
+	for src, cnt := range newCountBySource {
+		if cnt > maxNewPerSource {
+			floodSources[src] = true
+			s.log.Info("news: initial sync detected, skipping announce",
+				zap.String("source", src),
+				zap.Int("new_count", cnt),
+			)
+		}
+	}
+
 	// source → список строк сигналов
 	sourceSignals := make(map[string][]string)
 	// сохраняем порядок источников
@@ -158,6 +182,9 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 
 	for i := range newArticles {
 		a := &newArticles[i]
+		if floodSources[a.Source] {
+			continue
+		}
 		signal, err := s.summarizer.Summarize(ctx, a.Title, a.Description)
 		if err != nil {
 			s.log.Warn("news: ollama analyze failed",
