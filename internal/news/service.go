@@ -195,6 +195,9 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		}
 		signal = strings.TrimSpace(signal)
 		s.log.Info("news: ollama signal", zap.String("signal", signal), zap.String("title", a.Title))
+		if err := s.repo.UpdateSummary(ctx, a.GUID, signal); err != nil {
+			s.log.Warn("news: failed to save ollama signal", zap.String("guid", a.GUID), zap.Error(err))
+		}
 		if signal == "" || signal == "NONE" {
 			continue
 		}
