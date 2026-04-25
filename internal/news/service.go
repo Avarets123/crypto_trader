@@ -228,5 +228,5 @@ func formatSignalMsg(signal, link string) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return strings.Join(lines, "\n") + " - " + link
+	return strings.Join(lines, "\n") + fmt.Sprintf(" - <a href=%q>читать</a>", link)
 }

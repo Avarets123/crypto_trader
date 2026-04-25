@@ -273,7 +273,7 @@ func main() {
 
 
 	// --- RSS News ---
-	news.New(ctx, pool, tgNotifier, false, sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0), sharedconfig.GetEnvInt("NEWS_FETCH_INTERVAL_MIN", 30), log )
+	news.New(ctx, pool, tgNotifier, sharedconfig.GetEnvBool("NEWS_ENABLED", false), sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0), sharedconfig.GetEnvInt("NEWS_FETCH_INTERVAL_MIN", 30), log)
 
 
 	// --- Запуск бирж ---
