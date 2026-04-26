@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -30,53 +33,161 @@ type dexscreenerProfile struct {
 	} `json:"links"`
 }
 
-type dexscreenerTokensResponse []struct {
+type dexscreenerPair struct {
 	BaseToken struct {
 		Name   string `json:"name"`
 		Symbol string `json:"symbol"`
 	} `json:"baseToken"`
+	Liquidity struct {
+		USD float64 `json:"usd"`
+	} `json:"liquidity"`
+	Volume struct {
+		H1  float64 `json:"h1"`
+		H24 float64 `json:"h24"`
+	} `json:"volume"`
+	Txns struct {
+		H1 struct {
+			Buys  int `json:"buys"`
+			Sells int `json:"sells"`
+		} `json:"h1"`
+	} `json:"txns"`
+	PriceChange struct {
+		H1  float64 `json:"h1"`
+		H24 float64 `json:"h24"`
+	} `json:"priceChange"`
 }
 
-// fetchDexTokenTitle запрашивает имя и символ токена и возвращает строку вида "SYMBOL — Name".
-// При ошибке возвращает пустую строку.
-func fetchDexTokenTitle(ctx context.Context, chainID, address string) string {
+type dexTokenData struct {
+	title         string
+	liquidityUSD  float64
+	volumeH1      float64
+	txnsH1Buys    int
+	priceChangeH1 float64
+}
+
+// fetchDexTokenData запрашивает данные пары (название, ликвидность, объём, сделки, изменение цены).
+// Берётся первая пара с максимальной ликвидностью.
+func fetchDexTokenData(ctx context.Context, chainID, address string) dexTokenData {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	url := fmt.Sprintf(dexscreenerTokensURL, chainID, address)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return ""
+		return dexTokenData{}
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return ""
+		return dexTokenData{}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		return dexTokenData{}
 	}
 
-	var result dexscreenerTokensResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result) == 0 {
-		return ""
+	var pairs []dexscreenerPair
+	if err := json.NewDecoder(resp.Body).Decode(&pairs); err != nil || len(pairs) == 0 {
+		return dexTokenData{}
 	}
 
-	symbol := result[0].BaseToken.Symbol
-	name := result[0].BaseToken.Name
-	if symbol == "" {
-		return ""
+	// Выбираем пару с максимальной ликвидностью.
+	best := pairs[0]
+	for _, p := range pairs[1:] {
+		if p.Liquidity.USD > best.Liquidity.USD {
+			best = p
+		}
 	}
+
+	symbol := best.BaseToken.Symbol
+	name := best.BaseToken.Name
+	title := symbol
 	if name != "" && name != symbol {
-		return fmt.Sprintf("%s — %s", symbol, name)
+		title = fmt.Sprintf("%s — %s", symbol, name)
 	}
-	return symbol
+
+	return dexTokenData{
+		title:         title,
+		liquidityUSD:  best.Liquidity.USD,
+		volumeH1:      best.Volume.H1,
+		txnsH1Buys:    best.Txns.H1.Buys,
+		priceChangeH1: best.PriceChange.H1,
+	}
 }
 
-// FetchDexScreenerListings возвращает последние новые токен-профили с DEX (кроме Solana).
+// scoreDexToken считает скор токена (0–7) по ликвидности, объёму, сделкам и социальным ссылкам.
+func scoreDexToken(p dexscreenerProfile, d dexTokenData) int {
+	score := 0
+
+	hasTwitter, hasWebsite, hasTelegram := false, false, false
+	for _, l := range p.Links {
+		switch l.Type {
+		case "twitter":
+			hasTwitter = true
+		case "website":
+			hasWebsite = true
+		case "telegram":
+			hasTelegram = true
+		}
+	}
+	if hasTwitter || hasWebsite || hasTelegram {
+		score++
+	}
+	if (hasTwitter || hasTelegram) && hasWebsite {
+		score++ // есть и соцсеть, и сайт
+	}
+
+	if d.liquidityUSD > 10_000 {
+		score++
+	}
+	if d.liquidityUSD > 50_000 {
+		score++
+	}
+	if d.volumeH1 > 1_000 {
+		score++
+	}
+	if d.txnsH1Buys > 20 {
+		score++
+	}
+	if d.priceChangeH1 > 5 {
+		score++ // положительный моментум
+	}
+
+	return score
+}
+
+// formatDexMetrics формирует строку с метриками для TG-сообщения.
+func formatDexMetrics(d dexTokenData, score int) string {
+	liq := formatUSD(d.liquidityUSD)
+	vol := formatUSD(d.volumeH1)
+	sign := "+"
+	if d.priceChangeH1 < 0 {
+		sign = ""
+	}
+	return fmt.Sprintf("💧 Ликвидность: %s | 📊 Объём 1ч: %s | 🛒 Покупки 1ч: %d | 📈 Цена 1ч: %s%.2f%% | ⭐ Скор: %d/7",
+		liq, vol, d.txnsH1Buys, sign, d.priceChangeH1, score)
+}
+
+func formatUSD(v float64) string {
+	if v >= 1_000_000 {
+		return fmt.Sprintf("$%.1fM", v/1_000_000)
+	}
+	if v >= 1_000 {
+		return fmt.Sprintf("$%.1fK", v/1_000)
+	}
+	return fmt.Sprintf("$%.0f", math.Round(v))
+}
+
+func dexMinScore() int {
+	if v, err := strconv.Atoi(os.Getenv("DEXSCREENER_MIN_SCORE")); err == nil && v >= 0 {
+		return v
+	}
+	return 3
+}
+
+// FetchDexScreenerListings возвращает отфильтрованные по скору токен-профили с DEX.
 func FetchDexScreenerListings(ctx context.Context) ([]Item, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -102,7 +213,7 @@ func FetchDexScreenerListings(ctx context.Context) ([]Item, error) {
 		return nil, fmt.Errorf("dexscreener: decode: %w", err)
 	}
 
-	// Фильтруем шумные цепочки
+	// Фильтруем шумные цепочки.
 	var profiles []dexscreenerProfile
 	for _, p := range allProfiles {
 		if !skipDexChains[p.ChainID] {
@@ -110,21 +221,29 @@ func FetchDexScreenerListings(ctx context.Context) ([]Item, error) {
 		}
 	}
 
-	// Параллельно получаем имена токенов
-	titles := make([]string, len(profiles))
+	// Параллельно получаем данные пар для каждого токена.
+	tokenData := make([]dexTokenData, len(profiles))
 	var wg sync.WaitGroup
 	for i, p := range profiles {
 		i, p := i, p
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			titles[i] = fetchDexTokenTitle(ctx, p.ChainID, p.TokenAddress)
+			tokenData[i] = fetchDexTokenData(ctx, p.ChainID, p.TokenAddress)
 		}()
 	}
 	wg.Wait()
 
+	minScore := dexMinScore()
+
 	var items []Item
 	for i, p := range profiles {
+		d := tokenData[i]
+		score := scoreDexToken(p, d)
+		if score < minScore {
+			continue
+		}
+
 		var publishedAt *time.Time
 		if p.UpdatedAt != "" {
 			if t, err := time.Parse(time.RFC3339Nano, p.UpdatedAt); err == nil {
@@ -132,12 +251,14 @@ func FetchDexScreenerListings(ctx context.Context) ([]Item, error) {
 			}
 		}
 
-		summary := p.Description
-		if summary == "" {
-			summary = fmt.Sprintf("New token on %s DEX", p.ChainID)
+		desc := p.Description
+		if desc == "" {
+			desc = fmt.Sprintf("New token on %s DEX", p.ChainID)
 		}
+		metrics := formatDexMetrics(d, score)
+		summary := buildSummary(desc) + "\n" + metrics
 
-		title := titles[i]
+		title := d.title
 		if title == "" {
 			title = "New DEX token listing"
 		}
@@ -147,7 +268,7 @@ func FetchDexScreenerListings(ctx context.Context) ([]Item, error) {
 			GUID:        fmt.Sprintf("dex-%s-%s", p.ChainID, p.TokenAddress),
 			Title:       title,
 			Link:        p.URL,
-			Summary:     buildSummary(summary),
+			Summary:     summary,
 			PublishedAt: publishedAt,
 			IsListing:   true,
 		})
