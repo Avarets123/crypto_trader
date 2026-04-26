@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const dexscreenerProfilesURL = "https://api.dexscreener.com/token-profiles/latest/v1"
@@ -188,7 +190,7 @@ func dexMinScore() int {
 }
 
 // FetchDexScreenerListings возвращает отфильтрованные по скору токен-профили с DEX.
-func FetchDexScreenerListings(ctx context.Context) ([]Item, error) {
+func FetchDexScreenerListings(ctx context.Context, log *zap.Logger) ([]Item, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -235,11 +237,27 @@ func FetchDexScreenerListings(ctx context.Context) ([]Item, error) {
 	wg.Wait()
 
 	minScore := dexMinScore()
+	log.Info("dexscreener: scoring tokens",
+		zap.Int("total_profiles", len(allProfiles)),
+		zap.Int("after_chain_filter", len(profiles)),
+		zap.Int("min_score", minScore),
+	)
 
 	var items []Item
 	for i, p := range profiles {
 		d := tokenData[i]
 		score := scoreDexToken(p, d)
+		log.Debug("dexscreener: token scored",
+			zap.String("chain", p.ChainID),
+			zap.String("address", p.TokenAddress),
+			zap.String("title", d.title),
+			zap.Int("score", score),
+			zap.Float64("liquidity_usd", d.liquidityUSD),
+			zap.Float64("volume_h1", d.volumeH1),
+			zap.Int("txns_h1_buys", d.txnsH1Buys),
+			zap.Float64("price_change_h1", d.priceChangeH1),
+			zap.Int("links_count", len(p.Links)),
+		)
 		if score < minScore {
 			continue
 		}

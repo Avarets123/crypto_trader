@@ -94,7 +94,6 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		{"bitget", rss.FetchBitgetAnnouncements},
 		{"coinbase", rss.FetchCoinbaseListings},
 		{"mexc", rss.FetchMEXCListings},
-		{"dexscreener", rss.FetchDexScreenerListings},
 	}
 
 	var (
@@ -103,6 +102,7 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 	)
 
 	var wg sync.WaitGroup
+
 	for _, src := range sources {
 		src := src
 		wg.Add(1)
@@ -294,6 +294,10 @@ func formatListingBlock(a *Article, analysis string) string {
 
 	if a.PublishedAt != nil {
 		sb.WriteString(fmt.Sprintf("📅 Объявлено: %s UTC\n", a.PublishedAt.Format("02.01.2006 15:04")))
+	}
+
+	if a.Description != "" {
+		sb.WriteString(fmt.Sprintf("%s\n", a.Description))
 	}
 
 	if analysis != "" {
