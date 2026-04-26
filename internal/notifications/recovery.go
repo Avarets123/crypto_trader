@@ -51,7 +51,11 @@ func RecoverTrades(
 		}
 
 		exitPrice := t.EntryPrice
-		result, err := client.PlaceMarketOrder(ctx, t.Symbol, "sell", t.Qty)
+		closeSide := "sell"
+		if t.Side == "sell" {
+			closeSide = "buy"
+		}
+		result, err := client.PlaceMarketOrder(ctx, t.Symbol, closeSide, t.Qty)
 		if err != nil {
 			log.Error("recover trades: close order failed",
 				zap.String("symbol", t.Symbol),
@@ -71,7 +75,11 @@ func RecoverTrades(
 
 		const commissionRate = 0.001
 		commission := (t.EntryPrice + exitPrice) * t.Qty * commissionRate
-		pnl := (exitPrice-t.EntryPrice)*t.Qty - commission
+		priceDelta := exitPrice - t.EntryPrice
+		if t.Side == "sell" {
+			priceDelta = t.EntryPrice - exitPrice
+		}
+		pnl := priceDelta*t.Qty - commission
 		now := time.Now()
 
 		t.ExitPrice = &exitPrice

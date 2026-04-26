@@ -228,7 +228,12 @@ func (m *Service) CloseTrade(ctx context.Context, id int64, exitPrice float64, e
 	// комиссия: 0.1% за вход + 0.1% за выход
 	const commissionRate = 0.001
 	commission := (trade.EntryPrice + exitPrice) * trade.Qty * commissionRate
-	pnl := (exitPrice-trade.EntryPrice)*trade.Qty - commission
+	// Для шорта (Side="sell") прибыль = entry - exit; для лонга — exit - entry.
+	priceDelta := exitPrice - trade.EntryPrice
+	if trade.Side == "sell" {
+		priceDelta = trade.EntryPrice - exitPrice
+	}
+	pnl := priceDelta*trade.Qty - commission
 	closedAt := time.Now()
 
 	m.log.Info(trade.TradeExchange+": pnl calculated",

@@ -27,16 +27,28 @@ type priceEntry struct {
 
 // SymbolMetrics отслеживает скользящие метрики для одного символа:
 // CD_1m (кумулятивная дельта за 1 мин), VolumeCluster (3 мин),
-// история цен (15 мин), средний объём сделки (последние 500 сделок).
+// история цен (15 мин), средний объём сделки (последние 500 сделок),
+// EMA цены (фильтр тренда).
 type SymbolMetrics struct {
-	mu        sync.Mutex
-	trades1h  []tradeEntry // сделки за последний час (для CD, VolumeCluster)
-	trades500 []tradeEntry // последние 500 сделок (для AvgTradeSizeUSDT)
-	priceHist []priceEntry // цены за последние 15 минут
+	mu          sync.Mutex
+	trades1h    []tradeEntry // сделки за последний час (для CD, VolumeCluster)
+	trades500   []tradeEntry // последние 500 сделок (для AvgTradeSizeUSDT)
+	priceHist   []priceEntry // цены за последние 15 минут
+	ema         float64      // экспоненциальная скользящая средняя цены
+	emaInited   bool         // флаг: EMA получила первое значение
+	emaPeriod   int          // период EMA в количестве точек
+	lastEmaTick time.Time    // последний апдейт EMA — для дросселирования
 }
 
 func newSymbolMetrics() *SymbolMetrics {
-	return &SymbolMetrics{}
+	return newSymbolMetricsWithEMA(20)
+}
+
+func newSymbolMetricsWithEMA(period int) *SymbolMetrics {
+	if period < 2 {
+		period = 2
+	}
+	return &SymbolMetrics{emaPeriod: period}
 }
 
 // OnTrade регистрирует новую сделку (qty в базовой валюте, price в USDT).
@@ -68,7 +80,8 @@ func (m *SymbolMetrics) OnTrade(qty, price float64, isBuy bool) {
 	}
 }
 
-// OnPrice регистрирует текущую цену для истории 15 минут (для ShortPumpPct).
+// OnPrice регистрирует текущую цену для истории 15 минут (для ShortPumpPct)
+// и обновляет EMA цены не чаще одного раза в секунду (грубый эквивалент 1-сек таймфрейма).
 func (m *SymbolMetrics) OnPrice(price float64) {
 	now := time.Now()
 	m.mu.Lock()
@@ -82,6 +95,24 @@ func (m *SymbolMetrics) OnPrice(price float64) {
 	if first > 0 {
 		m.priceHist = m.priceHist[first:]
 	}
+
+	// EMA: дросселируем до 1 апдейта в секунду, чтобы период EMA соответствовал секундам.
+	if !m.emaInited {
+		m.ema = price
+		m.emaInited = true
+		m.lastEmaTick = now
+	} else if now.Sub(m.lastEmaTick) >= time.Second {
+		alpha := 2.0 / (float64(m.emaPeriod) + 1.0)
+		m.ema = alpha*price + (1-alpha)*m.ema
+		m.lastEmaTick = now
+	}
+}
+
+// EMA возвращает текущее значение EMA и флаг готовности (после WarmupSec данные стабильны).
+func (m *SymbolMetrics) EMA() (float64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ema, m.emaInited
 }
 
 // CD1m возвращает кумулятивную дельту объёма (USDT) за последнюю минуту.

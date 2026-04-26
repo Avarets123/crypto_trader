@@ -31,8 +31,17 @@ type Config struct {
 	TPPctAltMax     float64 // MICROSCALPING_TP_PCT_ALT_MAX=3.0; макс. TP для альткоинов (%)
 
 	// --- Параметры шорт-входа ---
+	ShortsEnabled   bool    // MICROSCALPING_SHORTS_ENABLED=false; разрешить шорты (требует фьючерс/маржин)
 	ShortPumpPct    float64 // MICROSCALPING_SHORT_PUMP_PCT=2.0; мин. рост за 15 мин для шорт-входа (%)
 	ShortPumpAltPct float64 // MICROSCALPING_SHORT_PUMP_ALT_PCT=4.0; мин. рост за 15 мин для альткоинов (%)
+
+	// --- Фильтр тренда (EMA) ---
+	TrendFilterEnabled bool // MICROSCALPING_TREND_FILTER_ENABLED=true; требовать совпадение со стороной EMA
+	TrendEMAPeriod     int  // MICROSCALPING_TREND_EMA_PERIOD=60; период EMA в секундах (по 1 точке/сек)
+
+	// --- Подтверждение пробоя стены (P2) ---
+	WallBreakoutRequired bool    // MICROSCALPING_WALL_BREAKOUT_REQUIRED=true; для лонга требовать пробой Ask-стены ценой
+	WallBreakoutBufPct   float64 // MICROSCALPING_WALL_BREAKOUT_BUF_PCT=0.05; на сколько % выше Ask-стены должна закрыться сделка
 
 	// --- Общие параметры ---
 	MaxPositionDurationH int     // MICROSCALPING_MAX_POSITION_DURATION_H=4; максимальное время удержания позиции (часы)
@@ -74,20 +83,27 @@ func LoadConfig() Config {
 
 		TPWallStableSec: sharedconfig.GetEnvInt("MICROSCALPING_TP_WALL_STABLE_SEC", 30),
 		TPWallOffset:    sharedconfig.GetEnvFloat("MICROSCALPING_TP_WALL_OFFSET", 0.01),
-		TPPctBTCETHMin:  sharedconfig.GetEnvFloat("MICROSCALPING_TP_PCT_BTC_ETH_MIN", 0.7),
-		TPPctBTCETHMax:  sharedconfig.GetEnvFloat("MICROSCALPING_TP_PCT_BTC_ETH_MAX", 1.2),
-		TPPctAltMin:     sharedconfig.GetEnvFloat("MICROSCALPING_TP_PCT_ALT_MIN", 1.5),
-		TPPctAltMax:     sharedconfig.GetEnvFloat("MICROSCALPING_TP_PCT_ALT_MAX", 3.0),
+		TPPctBTCETHMin:  sharedconfig.GetEnvFloat("MICROSCALPING_TP_PCT_BTC_ETH_MIN", 1.0),
+		TPPctBTCETHMax:  sharedconfig.GetEnvFloat("MICROSCALPING_TP_PCT_BTC_ETH_MAX", 1.5),
+		TPPctAltMin:     sharedconfig.GetEnvFloat("MICROSCALPING_TP_PCT_ALT_MIN", 2.0),
+		TPPctAltMax:     sharedconfig.GetEnvFloat("MICROSCALPING_TP_PCT_ALT_MAX", 3.5),
 
+		ShortsEnabled:   sharedconfig.GetEnvBool("MICROSCALPING_SHORTS_ENABLED", false),
 		ShortPumpPct:    sharedconfig.GetEnvFloat("MICROSCALPING_SHORT_PUMP_PCT", 2.0),
 		ShortPumpAltPct: sharedconfig.GetEnvFloat("MICROSCALPING_SHORT_PUMP_ALT_PCT", 4.0),
+
+		TrendFilterEnabled: sharedconfig.GetEnvBool("MICROSCALPING_TREND_FILTER_ENABLED", true),
+		TrendEMAPeriod:     sharedconfig.GetEnvInt("MICROSCALPING_TREND_EMA_PERIOD", 60),
+
+		WallBreakoutRequired: sharedconfig.GetEnvBool("MICROSCALPING_WALL_BREAKOUT_REQUIRED", true),
+		WallBreakoutBufPct:   sharedconfig.GetEnvFloat("MICROSCALPING_WALL_BREAKOUT_BUF_PCT", 0.05),
 
 		MaxPositionDurationH: sharedconfig.GetEnvInt("MICROSCALPING_MAX_POSITION_DURATION_H", 4),
 		NoTradeHourStartMSK:  sharedconfig.GetEnvInt("MICROSCALPING_NO_TRADE_HOUR_START_MSK", 3),
 		NoTradeHourEndMSK:    sharedconfig.GetEnvInt("MICROSCALPING_NO_TRADE_HOUR_END_MSK", 10),
-		StopLossPct:          sharedconfig.GetEnvFloat("MICROSCALPING_STOP_LOSS_PCT", 0.35),
-		TrailActivationPct:   sharedconfig.GetEnvFloat("MICROSCALPING_TRAIL_ACTIVATION_PCT", 0.15),
-		TrailPct:             sharedconfig.GetEnvFloat("MICROSCALPING_TRAIL_PCT", 0.10),
+		StopLossPct:          sharedconfig.GetEnvFloat("MICROSCALPING_STOP_LOSS_PCT", 0.5),
+		TrailActivationPct:   sharedconfig.GetEnvFloat("MICROSCALPING_TRAIL_ACTIVATION_PCT", 0.6),
+		TrailPct:             sharedconfig.GetEnvFloat("MICROSCALPING_TRAIL_PCT", 0.25),
 		TPCheckIntervalSec:   sharedconfig.GetEnvInt("MICROSCALPING_TP_CHECK_INTERVAL_SEC", 5),
 		WarmupSec:            sharedconfig.GetEnvInt("MICROSCALPING_WARMUP_SEC", 150),
 		CooldownSec:          sharedconfig.GetEnvInt("MICROSCALPING_COOLDOWN_SEC", 120),

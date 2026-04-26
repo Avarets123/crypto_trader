@@ -49,6 +49,13 @@ type WallTracker struct {
 	log      *zap.Logger
 }
 
+// AskWallCount возвращает текущее число отслеживаемых Ask-стен.
+func (wt *WallTracker) AskWallCount() int {
+	wt.mu.Lock()
+	defer wt.mu.Unlock()
+	return len(wt.askWalls)
+}
+
 func newWallTracker(log *zap.Logger) *WallTracker {
 	return &WallTracker{
 		askWalls: make(map[float64]*WallEntry),

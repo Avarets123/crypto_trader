@@ -35,6 +35,7 @@ type Service struct {
 	symbols     []string
 	metrics     map[string]*SymbolMetrics
 	walls       map[string]*WallTracker
+	counters    *FilterCounters
 	warmupUntil time.Time
 	mskLoc      *time.Location
 	log         *zap.Logger
@@ -111,6 +112,7 @@ func NewService(ctx context.Context, cfg Config, tradeSvc *trade.Service, bookSv
 		cooldowns: make(map[string]time.Time),
 		metrics:   make(map[string]*SymbolMetrics),
 		walls:     make(map[string]*WallTracker),
+		counters:  newFilterCounters(),
 		mskLoc:    loc,
 		log:       log,
 	}
@@ -124,7 +126,7 @@ func (s *Service) SetSymbols(symbols []string) {
 	copy(s.symbols, symbols)
 	for _, sym := range s.symbols {
 		if _, ok := s.metrics[sym]; !ok {
-			s.metrics[sym] = newSymbolMetrics()
+			s.metrics[sym] = newSymbolMetricsWithEMA(s.cfg.TrendEMAPeriod)
 		}
 		if _, ok := s.walls[sym]; !ok {
 			s.walls[sym] = newWallTracker(s.log)
@@ -157,7 +159,7 @@ func (s *Service) OnSymbolsChanged(added, removed []string) {
 
 	for _, sym := range added {
 		if _, ok := s.metrics[sym]; !ok {
-			s.metrics[sym] = newSymbolMetrics()
+			s.metrics[sym] = newSymbolMetricsWithEMA(s.cfg.TrendEMAPeriod)
 		}
 		if _, ok := s.walls[sym]; !ok {
 			s.walls[sym] = newWallTracker(s.log)
@@ -194,12 +196,18 @@ func (s *Service) OnTrade(order exchange_orders.ExchangeOrder) {
 	}
 
 	wt := s.getOrCreateWallTracker(order.Symbol)
+	prevAskWalls := wt.AskWallCount()
 	wt.Update(ob, s.cfg.WallAnomalyMult)
+	if added := wt.AskWallCount() - prevAskWalls; added > 0 {
+		for i := 0; i < added; i++ {
+			s.counters.Inc(StageWallNew)
+		}
+	}
 
 	if isBuy {
-		s.checkLongSignal(order.Symbol, tradeUSDT, ob, m, wt)
+		s.checkLongSignal(order.Symbol, tradeUSDT, price, ob, m, wt)
 	} else {
-		s.checkShortSignal(order.Symbol, tradeUSDT, ob, m, wt)
+		s.checkShortSignal(order.Symbol, tradeUSDT, price, ob, m, wt)
 	}
 }
 
@@ -208,7 +216,7 @@ func (s *Service) getOrCreateMetrics(symbol string) *SymbolMetrics {
 	s.mu.Lock()
 	m, ok := s.metrics[symbol]
 	if !ok {
-		m = newSymbolMetrics()
+		m = newSymbolMetricsWithEMA(s.cfg.TrendEMAPeriod)
 		s.metrics[symbol] = m
 	}
 	s.mu.Unlock()
@@ -227,7 +235,8 @@ func (s *Service) getOrCreateWallTracker(symbol string) *WallTracker {
 	return wt
 }
 
-// Start инициализирует период прогрева и блокирует до ctx.Done().
+// Start инициализирует период прогрева, запускает периодический дамп счётчиков
+// отсева сигналов и блокирует до ctx.Done().
 func (s *Service) Start(ctx context.Context) {
 	warmup := time.Duration(s.cfg.WarmupSec) * time.Second
 	s.warmupUntil = time.Now().Add(warmup)
@@ -235,6 +244,7 @@ func (s *Service) Start(ctx context.Context) {
 		zap.Duration("duration", warmup),
 		zap.Time("ready_at", s.warmupUntil),
 	)
+	go s.runReporter(ctx, 5*time.Minute)
 	<-ctx.Done()
 }
 
@@ -318,16 +328,22 @@ func (s *Service) calcTPPrice(symbol string, entryPrice float64, isShort bool) (
 //
 // Условия (все должны совпасть):
 //  1. Не в запрещённом временном окне (03:00–10:00 МСК)
-//  2. Ask-стена (age > WallMinAgeSec) поглощается на >= WallAbsorptionPct%
-//  3. Текущая сделка — «кит» Buy
-//  4. VolumeCluster_3m > VolumeCluster_1h_avg (рынок «живой»)
-func (s *Service) checkLongSignal(symbol string, tradeUSDT float64, ob *orderbook.OrderBook, m *SymbolMetrics, wt *WallTracker) {
+//  2. Тренд-фильтр (опц.): цена > EMA
+//  3. Ask-стена (age > WallMinAgeSec) поглощается на >= WallAbsorptionPct%
+//     и подтверждается пробоем (price > wall.Price * (1 + buf))
+//  4. Текущая сделка — «кит» Buy
+//  5. VolumeCluster_3m > VolumeCluster_1h_avg (рынок «живой»)
+func (s *Service) checkLongSignal(symbol string, tradeUSDT, tradePrice float64, ob *orderbook.OrderBook, m *SymbolMetrics, wt *WallTracker) {
 	defer utils.TimeTracker(s.log, "checkLongSignal microscalping")()
 
+	s.counters.Inc(StageLongTotal)
+
 	if time.Now().Before(s.warmupUntil) {
+		s.counters.Inc(StageLongWarmup)
 		return
 	}
 	if s.isNoTradeWindow() {
+		s.counters.Inc(StageLongNoTradeWin)
 		return
 	}
 
@@ -337,16 +353,46 @@ func (s *Service) checkLongSignal(symbol string, tradeUSDT float64, ob *orderboo
 		return
 	}
 
+	// Условие: тренд-фильтр по EMA. Лонгуем только в восходящем контексте.
+	if s.cfg.TrendFilterEnabled {
+		if ema, ok := m.EMA(); ok && tradePrice <= ema {
+			s.counters.Inc(StageLongEMABlock)
+			s.log.Debug("microscalping long: blocked by EMA trend filter",
+				zap.String("symbol", symbol),
+				zap.Float64("price", tradePrice),
+				zap.Float64("ema", ema),
+			)
+			return
+		}
+	}
+
 	avgTradeSizeUSDT := m.AvgTradeSizeUSDT()
 
-	// Условие 1+2: Ask-стена с поглощением >= WallAbsorptionPct%
+	// Условие: Ask-стена с поглощением >= WallAbsorptionPct%
 	absorbWall := wt.GetAbsorbingAskWall(bid0Price, s.cfg.WallMinAgeSec, s.cfg.WallAbsorptionPct)
 	if absorbWall == nil {
+		s.counters.Inc(StageLongNoWall)
 		return
 	}
 
-	// Условие 3: кит Buy
+	// Подтверждение пробоя: текущая сделка прошла выше уровня стены с буфером.
+	if s.cfg.WallBreakoutRequired {
+		breakoutLevel := absorbWall.Price * (1 + s.cfg.WallBreakoutBufPct/100)
+		if tradePrice < breakoutLevel {
+			s.counters.Inc(StageLongNoBreakout)
+			s.log.Debug("microscalping long: wall not broken yet",
+				zap.String("symbol", symbol),
+				zap.Float64("trade_price", tradePrice),
+				zap.Float64("wall_price", absorbWall.Price),
+				zap.Float64("breakout_level", breakoutLevel),
+			)
+			return
+		}
+	}
+
+	// Условие: кит Buy
 	if !s.isWhale(symbol, tradeUSDT, avgTradeSizeUSDT, ob) {
+		s.counters.Inc(StageLongNotWhale)
 		s.log.Debug("microscalping long: not a whale",
 			zap.String("symbol", symbol),
 			zap.Float64("trade_usdt", tradeUSDT),
@@ -355,10 +401,11 @@ func (s *Service) checkLongSignal(symbol string, tradeUSDT float64, ob *orderboo
 		return
 	}
 
-	// Условие 4: VolumeCluster_3m > VolumeCluster_1h_avg
+	// Условие: VolumeCluster_3m > VolumeCluster_1h_avg
 	vc3m := m.VolumeCluster3m()
 	vc1hAvg := m.VolumeCluster1hAvg()
 	if vc3m <= vc1hAvg {
+		s.counters.Inc(StageLongLowVC)
 		s.log.Debug("microscalping long: volume cluster below average",
 			zap.String("symbol", symbol),
 			zap.Float64("vc_3m", vc3m),
@@ -367,6 +414,7 @@ func (s *Service) checkLongSignal(symbol string, tradeUSDT float64, ob *orderboo
 		return
 	}
 
+	s.counters.Inc(StageLongPassed)
 	s.log.Info("microscalping long: all conditions met, attempting entry",
 		zap.String("symbol", symbol),
 		zap.Float64("wall_price", absorbWall.Price),
@@ -389,20 +437,33 @@ func (s *Service) checkLongSignal(symbol string, tradeUSDT float64, ob *orderboo
 
 // checkShortSignal проверяет условия входа в ШОРТ на основе сделки Sell.
 //
-// Условия (все должны совпасть):
-//  1. Цена выросла > ShortPumpPct% за последние 15 минут
-//  2. Новая Ask-стена (15–20 сек) на Ask, не убывает
-//  3. CD_1m < 0 И текущая сделка — «кит» Sell
-//  4. Дивергенция: VolumeCluster_3m < VolumeCluster_1h_avg (объём падает, цена выросла)
+// Шорты по умолчанию выключены (MICROSCALPING_SHORTS_ENABLED=false), т.к. требуют
+// маржинального или фьючерсного аккаунта. На спот-аккаунте sell либо просто продаст
+// имеющуюся базовую валюту, либо завершится ошибкой.
 //
-// Требует маржинального / фьючерсного аккаунта.
-func (s *Service) checkShortSignal(symbol string, tradeUSDT float64, ob *orderbook.OrderBook, m *SymbolMetrics, wt *WallTracker) {
+// Условия (все должны совпасть, если включены):
+//  1. Шорты разрешены флагом
+//  2. Тренд-фильтр: цена < EMA
+//  3. Цена выросла > ShortPumpPct% за последние 15 минут
+//  4. Новая Ask-стена (15–20 сек) на Ask, не убывает
+//  5. CD_1m < 0 И текущая сделка — «кит» Sell
+//  6. Дивергенция: VolumeCluster_3m < VolumeCluster_1h_avg
+func (s *Service) checkShortSignal(symbol string, tradeUSDT, tradePrice float64, ob *orderbook.OrderBook, m *SymbolMetrics, wt *WallTracker) {
 	defer utils.TimeTracker(s.log, "checkShortSignal microscalping")()
 
+	s.counters.Inc(StageShortTotal)
+
+	if !s.cfg.ShortsEnabled {
+		s.counters.Inc(StageShortDisabled)
+		return
+	}
+
 	if time.Now().Before(s.warmupUntil) {
+		s.counters.Inc(StageShortWarmup)
 		return
 	}
 	if s.isNoTradeWindow() {
+		s.counters.Inc(StageShortNoTradeWin)
 		return
 	}
 
@@ -412,21 +473,36 @@ func (s *Service) checkShortSignal(symbol string, tradeUSDT float64, ob *orderbo
 		return
 	}
 
+	// Тренд-фильтр: шорт только в нисходящем контексте.
+	if s.cfg.TrendFilterEnabled {
+		if ema, ok := m.EMA(); ok && tradePrice >= ema {
+			s.counters.Inc(StageShortEMABlock)
+			s.log.Debug("microscalping short: blocked by EMA trend filter",
+				zap.String("symbol", symbol),
+				zap.Float64("price", tradePrice),
+				zap.Float64("ema", ema),
+			)
+			return
+		}
+	}
+
 	avgTradeSizeUSDT := m.AvgTradeSizeUSDT()
 
-	// Условие 1: локальный перегрев за 15 минут
+	// Условие: локальный перегрев за 15 минут
 	pumpThreshold := s.cfg.ShortPumpPct
 	if symbolType(symbol) == "alt" {
 		pumpThreshold = s.cfg.ShortPumpAltPct
 	}
 	changePct := m.PriceChangePct15m()
 	if changePct <= pumpThreshold {
+		s.counters.Inc(StageShortNoPump)
 		return
 	}
 
 	// Условие 2: новая Ask-стена (minAgeSec..20сек), не убывает
 	newWall := wt.GetNewAskWall(bid0Price, s.cfg.WallMinAgeSec, 20)
 	if newWall == nil {
+		s.counters.Inc(StageShortNoNewWall)
 		s.log.Debug("microscalping short: no new stable ask wall",
 			zap.String("symbol", symbol),
 			zap.Float64("price_change_pct", changePct),
@@ -437,6 +513,7 @@ func (s *Service) checkShortSignal(symbol string, tradeUSDT float64, ob *orderbo
 	// Условие 3: CD_1m < 0 И кит Sell
 	cd1m := m.CD1m()
 	if cd1m >= 0 {
+		s.counters.Inc(StageShortCDPositive)
 		s.log.Debug("microscalping short: CD1m is positive",
 			zap.String("symbol", symbol),
 			zap.Float64("cd1m", cd1m),
@@ -444,6 +521,7 @@ func (s *Service) checkShortSignal(symbol string, tradeUSDT float64, ob *orderbo
 		return
 	}
 	if !s.isWhale(symbol, tradeUSDT, avgTradeSizeUSDT, ob) {
+		s.counters.Inc(StageShortNotWhale)
 		return
 	}
 
@@ -451,6 +529,7 @@ func (s *Service) checkShortSignal(symbol string, tradeUSDT float64, ob *orderbo
 	vc3m := m.VolumeCluster3m()
 	vc1hAvg := m.VolumeCluster1hAvg()
 	if vc3m >= vc1hAvg {
+		s.counters.Inc(StageShortNoDiverg)
 		s.log.Debug("microscalping short: no volume divergence",
 			zap.String("symbol", symbol),
 			zap.Float64("vc_3m", vc3m),
@@ -458,6 +537,8 @@ func (s *Service) checkShortSignal(symbol string, tradeUSDT float64, ob *orderbo
 		)
 		return
 	}
+
+	s.counters.Inc(StageShortPassed)
 
 	s.log.Info("microscalping short: all conditions met, attempting entry",
 		zap.String("symbol", symbol),
@@ -713,41 +794,17 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 
 		case <-tpCheck.C:
 			if t.Side == "long" {
-				// Обновляем SL по Bid-стене
+				// Обновляем SL по Bid-стене (подтягиваем стоп вверх по поддержке).
 				wt := s.getOrCreateWallTracker(t.Symbol)
 				if suppWall := wt.GetBidSupportWall(lastPrice, s.cfg.WallMinAgeSec); suppWall != nil {
 					newSL := suppWall.Price
-					if newSL > hardSL && newSL < lastPrice {
-						if newSL > slLevel {
-							slLevel = newSL
-							s.log.Debug("microscalping: SL updated via bid wall",
-								zap.Int64("id", t.ID),
-								zap.String("symbol", t.Symbol),
-								zap.Float64("new_sl", slLevel),
-							)
-						}
-					}
-				}
-
-				// TP: цена достигла цели И Ask-стена стабильна > TPWallStableSec
-				if lastPrice >= t.TPPrice {
-					wt2 := s.getOrCreateWallTracker(t.Symbol)
-					stableWall := wt2.GetStableAskWall(lastPrice*0.999, s.cfg.TPWallStableSec)
-					if stableWall != nil {
-						exitPrice := stableWall.Price - s.cfg.TPWallOffset
-						if exitPrice <= 0 {
-							exitPrice = lastPrice
-						}
-						s.log.Info("microscalping: TP triggered (stable ask wall)",
+					if newSL > hardSL && newSL < lastPrice && newSL > slLevel {
+						slLevel = newSL
+						s.log.Debug("microscalping: SL updated via bid wall",
 							zap.Int64("id", t.ID),
 							zap.String("symbol", t.Symbol),
-							zap.Float64("price", lastPrice),
-							zap.Float64("wall_price", stableWall.Price),
-							zap.Float64("exit_price", exitPrice),
-							zap.Float64("wall_age_sec", stableWall.Age().Seconds()),
+							zap.Float64("new_sl", slLevel),
 						)
-						s.closeTrade(t, exitPrice, "tp")
-						return
 					}
 				}
 			}
@@ -805,16 +862,16 @@ func (s *Service) watchTrade(t *MicroscalpingTrade) {
 					return
 				}
 
-				// TP (быстрая проверка в price loop — стену проверяем в tpCheck)
+				// TP лонга: цена достигла цели — закрываем сразу.
 				if t.TPPrice > 0 && price >= t.TPPrice {
-					// Не закрываем сразу — ждём подтверждения стеной в tpCheck
-					// Но если прошло более 30 сек с момента достижения цели — закрываем без стены
-					s.log.Debug("microscalping: TP target reached, waiting for wall confirmation",
+					s.log.Info("microscalping: TP hit (long)",
 						zap.Int64("id", t.ID),
 						zap.String("symbol", t.Symbol),
 						zap.Float64("price", price),
 						zap.Float64("tp_price", t.TPPrice),
 					)
+					s.closeTrade(t, price, "tp")
+					return
 				}
 
 			} else {
