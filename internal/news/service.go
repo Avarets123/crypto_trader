@@ -103,6 +103,39 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 
 	var wg sync.WaitGroup
 
+	// DexScreener обрабатывается отдельно — функция принимает логгер для диагностики скоринга.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		items, err := rss.FetchDexScreenerListings(ctx, s.log)
+		if err != nil {
+			s.log.Warn("news: failed to fetch RSS",
+				zap.String("source", "dexscreener"),
+				zap.Error(err),
+			)
+			return
+		}
+		s.log.Info("news: fetched articles",
+			zap.String("source", "dexscreener"),
+			zap.Int("count", len(items)),
+		)
+		articles := make([]Article, 0, len(items))
+		for _, it := range items {
+			articles = append(articles, Article{
+				Source:      it.Source,
+				GUID:        it.GUID,
+				Title:       it.Title,
+				Link:        it.Link,
+				Description: it.Summary,
+				PublishedAt: it.PublishedAt,
+				IsListing:   it.IsListing,
+			})
+		}
+		mu.Lock()
+		allArticles = append(allArticles, articles...)
+		mu.Unlock()
+	}()
+
 	for _, src := range sources {
 		src := src
 		wg.Add(1)
