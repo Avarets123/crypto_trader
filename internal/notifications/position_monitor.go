@@ -29,7 +29,7 @@ type positionMonitor struct {
 }
 
 func NewPositionMonitor(ctx context.Context, tradeSvc *trade.Service, tickerService *ticker.TickerService, notifier *telegram.Notifier, tradesThreadID int, log *zap.Logger) {
-	posMonitorInterval := sharedconfig.GetEnvInt("POSITION_MONITOR_INTERVAL_SEC", 60)
+	posMonitorInterval := sharedconfig.GetEnvInt("POSITION_MONITOR_INTERVAL_SEC", 600)
 	posMonitor := newPositionMonitor(tradeSvc, notifier, tradesThreadID, posMonitorInterval, log.With(zap.String("component", "position-monitor")))
 	tickerService.WithOnSend(posMonitor.OnTicker)
 	go posMonitor.Start(ctx)

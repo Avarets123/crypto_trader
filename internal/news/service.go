@@ -3,6 +3,7 @@ package news
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -113,7 +114,7 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 				zap.String("source", "dexscreener"),
 				zap.Error(err),
 			)
-			return
+			return 
 		}
 		s.log.Info("news: fetched articles",
 			zap.String("source", "dexscreener"),
@@ -198,23 +199,10 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		return
 	}
 
-	// Защита от первого запуска: источники без дат (coinbase, mexc) могут вернуть
-	// тысячи "новых" записей сразу — сохраняем в БД, но в Telegram не шлём.
-	const maxNewPerSource = 20
-	newCountBySource := make(map[string]int)
-	for i := range newArticles {
-		newCountBySource[newArticles[i].Source]++
-	}
-	floodSources := make(map[string]bool)
-	for src, cnt := range newCountBySource {
-		if cnt > maxNewPerSource {
-			floodSources[src] = true
-			s.log.Info("news: initial sync detected, skipping announce",
-				zap.String("source", src),
-				zap.Int("new_count", cnt),
-			)
-		}
-	}
+	// Ограничиваем до последних 20 статей на источник, чтобы не флудить при первом запуске.
+	// Сортируем по PublishedAt desc (nil-даты идут последними), берём первые 20.
+	const maxNotifyPerSource = 20
+	newArticles = limitBySource(newArticles, maxNotifyPerSource)
 
 	// source → блоки для листингов и сигналов новостей
 	listingBlocks := make(map[string][]string)
@@ -227,9 +215,6 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 
 	for i := range newArticles {
 		a := &newArticles[i]
-		if floodSources[a.Source] {
-			continue
-		}
 		a.IsListing = isListingByGUID[a.GUID]
 
 		if a.IsListing {
@@ -358,4 +343,38 @@ func formatSignalMsg(signal, link string) string {
 		return ""
 	}
 	return strings.Join(lines, "\n") + fmt.Sprintf(" - <a href=%q>читать</a>", link)
+}
+
+// limitBySource оставляет не более n последних статей на каждый источник.
+// «Последние» — с наибольшим PublishedAt; статьи без даты считаются самыми старыми.
+func limitBySource(articles []Article, n int) []Article {
+	bySource := make(map[string][]Article)
+	var order []string
+	for _, a := range articles {
+		if _, seen := bySource[a.Source]; !seen {
+			order = append(order, a.Source)
+		}
+		bySource[a.Source] = append(bySource[a.Source], a)
+	}
+
+	result := make([]Article, 0, len(articles))
+	for _, src := range order {
+		group := bySource[src]
+		// Сортируем по дате убыванию (nil — в конец).
+		sort.Slice(group, func(i, j int) bool {
+			ti, tj := group[i].PublishedAt, group[j].PublishedAt
+			if ti == nil {
+				return false
+			}
+			if tj == nil {
+				return true
+			}
+			return ti.After(*tj)
+		})
+		if len(group) > n {
+			group = group[:n]
+		}
+		result = append(result, group...)
+	}
+	return result
 }
