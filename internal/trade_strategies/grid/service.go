@@ -13,40 +13,103 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/osman/bot-traider/internal/shared/exchange"
+	"github.com/osman/bot-traider/internal/shared/risk"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
 )
 
 // Service реализует Grid торговую стратегию:
-// геометрическая сетка лимитных buy/sell ордеров, стоп-лосс, trailing up.
+// геометрическая сетка лимитных buy/sell ордеров, стоп-лосс, trailing up,
+// опц. адаптивный диапазон через ATR и pause-фильтр через ADX.
 type Service struct {
-	mu       sync.Mutex
-	cfg      Config
-	ctx      context.Context
-	client   exchange.RestClient
-	tracker  *GridTracker
+	mu             sync.Mutex
+	cfg            Config
+	ctx            context.Context
+	client         exchange.RestClient
+	klineProvider  exchange.KlineProvider // для ATR/ADX (может быть nil — адаптивные фичи отключатся)
+	risk           *risk.Manager          // nil если risk-менеджер не подключён
+	tracker        *GridTracker
 	notifier       *telegram.Notifier
 	tradesThreadID int
 	log            *zap.Logger
 	repo           *GridRepository // nil если persistence не настроена
+
+	// Digest аккумулятор — буфер sell-циклов между TG-сводками.
+	// Защищён digestMu, чтобы не лочить основной mu при каждом filled-ордере.
+	digestMu      sync.Mutex
+	digestBuckets map[string]*digestBucket // ключ — symbol
+}
+
+// digestBucket — агрегат sell-циклов одного символа за интервал.
+type digestBucket struct {
+	cycles  int
+	pnlSum  float64
+	pnlMin  float64
+	pnlMax  float64
+	since   time.Time
 }
 
 
-func New(ctx context.Context, pool *pgxpool.Pool, tickerService *ticker.TickerService, symbols []string,gridClient exchange.RestClient, tgNotifier *telegram.Notifier, tradesThreadID int, log *zap.Logger) {
+// New создаёт и запускает Grid сервис если GRID_ENABLED=true.
+// Возвращает указатель на сервис или nil (если выключен / биржа не настроена).
+//
+// klineProvider используется для ATR/ADX (опц.). Если nil или биржа не поддерживает
+// klines — адаптивные функции автоматически отключаются и грид работает на фикс. % границах.
+func New(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	tickerService *ticker.TickerService,
+	symbols []string,
+	gridClient exchange.RestClient,
+	klineProvider exchange.KlineProvider,
+	tgNotifier *telegram.Notifier,
+	tradesThreadID int,
+	log *zap.Logger,
+) *Service {
 	gridCfg := LoadConfig()
-	if gridCfg.Enabled {
-		if gridClient == nil {
-			log.Fatal("grid: unknown exchange in GRID_EXCHANGE",
-				zap.String("exchange", gridCfg.Exchange))
-		}
-		gridSvc := NewService(gridCfg, symbols, gridClient, log.With(zap.String("component", "grid")), tgNotifier, tradesThreadID)
-		gridSvc.WithRepository(NewGridRepository(pool))
-		gridSvc.Start(ctx, symbols)
-		tickerService.WithOnSend(gridSvc.OnTicker)
-		log.Info("grid strategy enabled", zap.Strings("symbols", gridCfg.Symbols))
-	} else {
+	if !gridCfg.Enabled {
 		log.Info("grid strategy disabled (GRID_ENABLED=false)")
+		return nil
 	}
+	if gridClient == nil {
+		log.Fatal("grid: unknown exchange in GRID_EXCHANGE",
+			zap.String("exchange", gridCfg.Exchange))
+	}
+	gridSvc := NewService(gridCfg, symbols, gridClient, log.With(zap.String("component", "grid")), tgNotifier, tradesThreadID)
+	gridSvc.WithRepository(NewGridRepository(pool))
+	gridSvc.WithKlineProvider(klineProvider)
+	gridSvc.Start(ctx, symbols)
+	tickerService.WithOnSend(gridSvc.OnTicker)
+
+	// ADX-монитор стартует только если фильтр включён и есть klineProvider.
+	if gridCfg.UseADXFilter && klineProvider != nil {
+		go gridSvc.runADXMonitor(ctx)
+	}
+
+	// Digest-репортер — периодическая сводка sell-циклов в TG.
+	// Заменяет per-fill уведомления, чтобы не флудить чат.
+	if gridCfg.TGDigestIntervalMin > 0 {
+		go gridSvc.runDigestReporter(ctx)
+	}
+
+	log.Info("grid strategy enabled",
+		zap.Strings("symbols", gridCfg.Symbols),
+		zap.Bool("use_atr_range", gridCfg.UseATRRange),
+		zap.Bool("use_adx_filter", gridCfg.UseADXFilter),
+		zap.Bool("auto_shift_down", gridCfg.AutoShiftDown),
+	)
+	return gridSvc
+}
+
+// WithKlineProvider подключает источник свечей для ATR/ADX.
+func (s *Service) WithKlineProvider(kp exchange.KlineProvider) {
+	s.klineProvider = kp
+}
+
+// WithRiskManager подключает risk-менеджер: проверка лимитов перед стартом сетки
+// и RecordPnL на каждый завершённый sell-цикл.
+func (s *Service) WithRiskManager(r *risk.Manager) {
+	s.risk = r
 }
 
 // NewService создаёт Service.
@@ -77,6 +140,7 @@ func NewService(cfg Config, symbols []string, client exchange.RestClient, log *z
 		notifier:       notifier,
 		tradesThreadID: tradesThreadID,
 		log:            log,
+		digestBuckets:  make(map[string]*digestBucket),
 	}
 }
 
@@ -141,9 +205,9 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 	s.tracker.UpdatePrice(t.Symbol, price)
 
 	if !state.Active {
-		// Запускаем сетку при первом тике (один раз)
+		// Запускаем сетку при первом тике, если не на паузе ADX-фильтром.
 		s.mu.Lock()
-		shouldStart := !state.Active
+		shouldStart := !state.Active && !state.Paused
 		if shouldStart {
 			state.Active = true // ставим флаг сразу чтобы не запустить дважды
 		}
@@ -179,6 +243,24 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 		return
 	}
 
+	// Auto-shift down: при пробое нижней границы пересоздаём сетку вокруг новой цены.
+	// Срабатывает раньше чем StopLoss, так как цель — адаптация, а не аварийное закрытие.
+	if s.cfg.AutoShiftDown && state.LowerBound > 0 {
+		shiftTrigger := state.LowerBound * (1 - s.cfg.AutoShiftDownBufPct/100)
+		// При этом StopLoss остаётся ниже shiftTrigger — иначе сначала сработает SL.
+		if price < shiftTrigger && (state.StopLoss == 0 || shiftTrigger > state.StopLoss) {
+			s.log.Info("grid: auto-shift-down triggered",
+				zap.String("symbol", t.Symbol),
+				zap.Float64("price", price),
+				zap.Float64("lower_bound", state.LowerBound),
+				zap.Float64("shift_trigger", shiftTrigger),
+				zap.Float64("undershoot_pct", (1-price/state.LowerBound)*100),
+			)
+			go s.shiftGridDown(s.ctx, t.Symbol, price)
+			return
+		}
+	}
+
 
 
 	// Отправляем цену в watchGrid
@@ -191,24 +273,67 @@ func (s *Service) OnTicker(t ticker.Ticker) {
 // startGrid инициализирует уровни и размещает ордера.
 // Вызывается в горутине; флаг Active уже выставлен в OnTicker.
 func (s *Service) startGrid(ctx context.Context, symbol string, currentPrice float64) {
-	lower := currentPrice * (1 - s.cfg.LowerBoundPct/100)
-	upper := currentPrice * (1 + s.cfg.UpperBoundPct/100)
+	// Если ADX-фильтр в paused — не стартуем (вызов мог прийти из resume или ручного перезапуска).
+	if state, ok := s.tracker.Get(symbol); ok {
+		s.mu.Lock()
+		paused := state.Paused
+		s.mu.Unlock()
+		if paused {
+			s.log.Info("grid: skipping startGrid — symbol is paused by ADX filter",
+				zap.String("symbol", symbol),
+			)
+			return
+		}
+	}
+
+	// Risk-менеджер: проверяем что бот не заблокирован.
+	// Exposure для grid считается одной целой суммой TotalUSDT — фактического роста
+	// между перезапусками нет, поэтому RecordOpen не вызываем (иначе будем накручивать cap).
+	if s.risk != nil {
+		if s.risk.IsBlocked() {
+			s.log.Warn("grid: risk manager blocked, not starting grid",
+				zap.String("symbol", symbol),
+			)
+			return
+		}
+	}
+
+	// Адаптивный диапазон через ATR. Fallback на фикс. проценты если ATR недоступен.
+	var lower, upper float64
+	if s.cfg.UseATRRange && s.klineProvider != nil {
+		if l, u, ok := calcATRBounds(ctx, s.klineProvider, symbol, currentPrice, s.cfg.ATRPeriodHours, s.cfg.ATRMultiplier, s.log); ok {
+			lower, upper = l, u
+		}
+	}
+	if lower <= 0 || upper <= 0 {
+		lower = currentPrice * (1 - s.cfg.LowerBoundPct/100)
+		upper = currentPrice * (1 + s.cfg.UpperBoundPct/100)
+	}
 
 	prices := CalcLevels(lower, upper, s.cfg.Grids)
 
+	// TotalUSDT — общий капитал на ВСЮ Grid-стратегию, делится между символами.
+	// Иначе при N символах реальный exposure = N * TotalUSDT, что нарушает risk-кап.
+	perSymbolUSDT := s.cfg.TotalUSDT
+	if n := len(s.cfg.Symbols); n > 1 {
+		perSymbolUSDT = s.cfg.TotalUSDT / float64(n)
+	}
+
 	// Проверяем минимальный notional (цена × qty должна быть ≥ GRID_MIN_NOTIONAL_USDT)
-	qty := CalcQtyPerLevel(s.cfg.TotalUSDT, prices)
+	qty := CalcQtyPerLevel(perSymbolUSDT, prices)
 	notional := qty * currentPrice
 	if notional < s.cfg.MinNotionalUSDT {
-		s.log.Error("grid: order notional too small, grid will not start — increase GRID_TOTAL_USDT or decrease GRID_GRIDS",
+		s.log.Error("grid: order notional too small, grid will not start — increase GRID_TOTAL_USDT, decrease GRID_GRIDS or reduce number of GRID_SYMBOLS",
 			zap.String("symbol", symbol),
 			zap.Float64("notional_usdt", notional),
 			zap.Float64("min_notional_usdt", s.cfg.MinNotionalUSDT),
 			zap.Float64("qty_per_level", qty),
 			zap.Float64("price", currentPrice),
 			zap.Float64("total_usdt", s.cfg.TotalUSDT),
+			zap.Float64("per_symbol_usdt", perSymbolUSDT),
+			zap.Int("symbols_count", len(s.cfg.Symbols)),
 			zap.Int("grids", s.cfg.Grids),
-			zap.Float64("recommended_total_usdt", s.cfg.MinNotionalUSDT*float64(s.cfg.Grids)*2),
+			zap.Float64("recommended_total_usdt", s.cfg.MinNotionalUSDT*float64(s.cfg.Grids)*2*float64(len(s.cfg.Symbols))),
 		)
 		// Сбрасываем флаг Active чтобы не блокировать повторный старт
 		if state, ok := s.tracker.Get(symbol); ok {
@@ -274,6 +399,7 @@ func (s *Service) startGrid(ctx context.Context, symbol string, currentPrice flo
 	msg := fmt.Sprintf(
 		"🟩 <b>Grid запущена</b>\n"+
 			"Биржа: %s | Символ: <b>%s</b>\n"+
+			"Капитал на символ: %s USDT (из %s total)\n"+
 			"Цена входа: %s\n"+
 			"Диапазон: %s — %s\n"+
 			"Стоп-лосс: %s (-%s%%)\n"+
@@ -281,6 +407,7 @@ func (s *Service) startGrid(ctx context.Context, symbol string, currentPrice flo
 			"Объём/уровень: %.8g (≈%s USDT)\n"+
 			"Buy-ордеров размещено: %d / %d",
 		s.cfg.Exchange, symbol,
+		formatGridPrice(perSymbolUSDT), formatGridPrice(s.cfg.TotalUSDT),
 		formatGridPrice(currentPrice),
 		formatGridPrice(lower), formatGridPrice(upper),
 		formatGridPrice(sl), fmt.Sprintf("%.1f", s.cfg.StopLossPct),
@@ -354,11 +481,18 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 
 	pnl := 0.0
 	if side == "sell" {
-		// оценочный PnL одного цикла buy→sell
+		// оценочный PnL одного цикла buy→sell, минус 0.2% round-trip комиссии
 		buyPrice := level.Price / state.Ratio
-		pnl = (level.Price - buyPrice) * state.QtyPerLevel
+		grossPnL := (level.Price - buyPrice) * state.QtyPerLevel
+		commission := (level.Price + buyPrice) * state.QtyPerLevel * 0.001
+		pnl = grossPnL - commission
 		state.TotalPnL += pnl
 		state.FilledCycles++
+
+		// Уведомляем risk-менеджер о реализованном PnL цикла.
+		if s.risk != nil {
+			s.risk.RecordPnL("grid", pnl)
+		}
 	}
 
 	s.log.Info("grid: order filled",
@@ -372,56 +506,12 @@ func (s *Service) handleFilledOrder(ctx context.Context, state *GridState, level
 		zap.Int("filled_cycles", state.FilledCycles),
 	)
 
-	// Считаем активные ордера после исполнения
-	activeOrders := 0
-	for _, l := range state.Levels {
-		if l.OrderID != "" {
-			activeOrders++
-		}
-	}
-
-	nextAction := ""
-	switch side {
-	case "buy":
-		if level.Index+1 < len(state.Levels) {
-			nextAction = fmt.Sprintf("→ sell на %s", formatGridPrice(state.Levels[level.Index+1].Price))
-		}
-	case "sell":
-		if level.Index-1 >= 0 {
-			nextAction = fmt.Sprintf("→ buy на %s", formatGridPrice(state.Levels[level.Index-1].Price))
-		}
-	}
-
-	msg := fmt.Sprintf(
-		"✅ <b>Grid ордер исполнен</b>\n"+
-			"Символ: <b>%s</b>\n"+
-			"Сторона: %s | Уровень: %d / %d\n"+
-			"Цена: %s | Объём: %.8g\n"+
-			"Активных ордеров: %d\n"+
-			"%s",
-		state.Symbol,
-		strings.ToUpper(side), level.Index+1, len(state.Levels),
-		formatGridPrice(level.Price), state.QtyPerLevel,
-		activeOrders,
-		nextAction,
-	)
+	// Per-fill TG-уведомления отключены — спам при активной сетке.
+	// Sell-циклы аккумулируются в digest-буфер и отправляются периодической сводкой
+	// (см. runDigestReporter, интервал GRID_TG_DIGEST_INTERVAL_MIN).
 	if side == "sell" {
-		pnlSign := "+"
-		if pnl < 0 {
-			pnlSign = ""
-		}
-		msg += fmt.Sprintf("\nЦикл PnL: %s%.4f USDT", pnlSign, pnl)
-		msg += fmt.Sprintf("\nИтого за сессию: %s%.4f USDT (%d циклов)",
-			func() string {
-				if state.TotalPnL >= 0 {
-					return "+"
-				}
-				return ""
-			}(),
-			state.TotalPnL, state.FilledCycles,
-		)
+		s.recordDigestEntry(state.Symbol, pnl)
 	}
-	go s.notifier.SendToThread(ctx, msg, s.tradesThreadID)
 
 	switch side {
 	case "buy":
@@ -598,6 +688,85 @@ func (s *Service) shiftGridUp(ctx context.Context, symbol string, currentPrice f
 		pnlSign, state.TotalPnL,
 	)
 	go s.notifier.SendToThread(ctx, msg, s.tradesThreadID)
+
+	go s.startGrid(ctx, symbol, currentPrice)
+}
+
+// shiftGridDown симметрично shiftGridUp: пересоздаёт сетку вокруг новой (более низкой) цены.
+// При продаже накопленной базовой валюты теряем разницу — поэтому auto-shift-down следует
+// включать только когда вы готовы к realized loss за выход из старого диапазона.
+func (s *Service) shiftGridDown(ctx context.Context, symbol string, currentPrice float64) {
+	state, ok := s.tracker.Get(symbol)
+	if !ok {
+		return
+	}
+
+	s.mu.Lock()
+	if !state.Active {
+		s.mu.Unlock()
+		return
+	}
+	state.Active = false
+	oldLower := state.LowerBound
+	oldUpper := state.UpperBound
+	holdMin := time.Since(state.StartedAt).Minutes()
+	s.mu.Unlock()
+
+	s.log.Info("grid: cancelling all orders before shift down", zap.String("symbol", symbol))
+	CancelAllOrders(ctx, state, s.client, s.log)
+
+	// Продаём накопленную базовую валюту по рынку — иначе при пересоздании сетки
+	// мы получим asymmetric exposure (slot’ы под старые цены вверху, накопленный coin внизу).
+	// Считаем кол-во как сумму filled buy-уровней без парного sell.
+	pendingBaseQty := 0.0
+	for _, l := range state.Levels {
+		if l.Filled && l.Side == "buy" {
+			pendingBaseQty += state.QtyPerLevel
+		}
+	}
+	if pendingBaseQty > 0 {
+		s.log.Warn("grid: shift down — selling accumulated base qty by market",
+			zap.String("symbol", symbol),
+			zap.Float64("qty", pendingBaseQty),
+			zap.Float64("price", currentPrice),
+		)
+		if _, err := s.client.PlaceMarketOrder(ctx, symbol, "Sell", pendingBaseQty); err != nil {
+			s.log.Error("grid: shift down market sell failed",
+				zap.String("symbol", symbol),
+				zap.Float64("qty", pendingBaseQty),
+				zap.Error(err),
+			)
+		}
+	}
+
+	newLower := currentPrice * (1 - s.cfg.LowerBoundPct/100)
+	newUpper := currentPrice * (1 + s.cfg.UpperBoundPct/100)
+
+	pnlSign := "+"
+	if state.TotalPnL < 0 {
+		pnlSign = ""
+	}
+	if s.notifier != nil {
+		msg := fmt.Sprintf(
+			"📉 <b>Grid сдвиг вниз</b>\n"+
+				"Символ: <b>%s</b>\n"+
+				"Падение: %s → %s (-%.2f%%)\n"+
+				"Старый диапазон: %s — %s\n"+
+				"Новый диапазон: %s — %s\n"+
+				"Продано накоплений: %.8g\n"+
+				"Работа: %.1f мин | Циклов: %d\n"+
+				"PnL сессии: %s%.4f USDT",
+			symbol,
+			formatGridPrice(oldLower), formatGridPrice(currentPrice),
+			(1-currentPrice/oldLower)*100,
+			formatGridPrice(oldLower), formatGridPrice(oldUpper),
+			formatGridPrice(newLower), formatGridPrice(newUpper),
+			pendingBaseQty,
+			holdMin, state.FilledCycles,
+			pnlSign, state.TotalPnL,
+		)
+		go s.notifier.SendToThread(ctx, msg, s.tradesThreadID)
+	}
 
 	go s.startGrid(ctx, symbol, currentPrice)
 }

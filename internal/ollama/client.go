@@ -87,18 +87,47 @@ func (c *Client) AnalyzeListing(ctx context.Context, title, description string) 
 }
 
 // Summarize анализирует новость на предмет роста/падения криптовалют.
-// Возвращает строку вида "UP:BTC,ETH", "DOWN:SOL", "UP:BTC|DOWN:ETH" или "NONE".
+// Возвращает строку вида "UP:BTC:high,ETH:medium", "DOWN:SOL:low",
+// "UP:BTC:high|DOWN:ETH:medium" или "NONE".
+//
+// CONFIDENCE — уверенность в сигнале:
+//   - high   — официальное объявление с конкретикой (партнёрство, листинг, интеграция);
+//   - medium — позитивная/негативная новость, но реализация под вопросом или спекулятивно;
+//   - low    — мелкие новости, слухи, мнения, общая аналитика.
+//
+// Стратегии торгуют только high; medium/low идут в Telegram, но без сделки.
 func (c *Client) Summarize(ctx context.Context, title, description string) (string, error) {
 	prompt := fmt.Sprintf(
 		"You are a crypto market signal detector.\n"+
-			"Task: analyze the news and detect if it directly or indirectly signals price movement for any specific cryptocurrency.\n"+
-			"Rules:\n"+
-			"1. Use ticker symbols (BTC, ETH, SOL, etc.). Bitcoin→BTC, Ethereum→ETH, etc.\n"+
-			"2. If news suggests price growth or bullish outlook for coins, output: UP:<TICKER1>,<TICKER2>\n"+
-			"3. If news suggests price decline or bearish outlook for coins, output: DOWN:<TICKER1>,<TICKER2>\n"+
-			"4. If both signals exist for different coins, output: UP:<TICKERS>|DOWN:<TICKERS>\n"+
-			"5. If no clear price signal for any specific coin, output: NONE\n"+
-			"6. Return ONLY the result string. No explanation, no punctuation, no extra text.\n\n"+
+			"Task: analyze the news and detect if it directly or indirectly signals price movement for any specific cryptocurrency, AND classify your confidence in the signal.\n"+
+			"\n"+
+			"Output format (STRICT):\n"+
+			"- Bullish: UP:<TICKER1>:<CONFIDENCE>,<TICKER2>:<CONFIDENCE>\n"+
+			"- Bearish: DOWN:<TICKER1>:<CONFIDENCE>,<TICKER2>:<CONFIDENCE>\n"+
+			"- Mixed:   UP:<TICKER>:<CONFIDENCE>|DOWN:<TICKER>:<CONFIDENCE>\n"+
+			"- No signal: NONE\n"+
+			"\n"+
+			"CONFIDENCE values (lowercase, REQUIRED for every ticker):\n"+
+			"- high:   official announcement from a major source about a concrete event — partnership, exchange listing, mainnet launch, ETF approval, large integration, regulatory decision with named ticker.\n"+
+			"- medium: positive/negative news with potential price impact, but execution is uncertain, time horizon unclear, or details speculative.\n"+
+			"- low:    minor news, rumors, opinions, general market commentary, price predictions without concrete catalyst.\n"+
+			"\n"+
+			"Ticker rules:\n"+
+			"- Use uppercase ticker symbols (BTC, ETH, SOL, BNB, XRP, etc.). Bitcoin→BTC, Ethereum→ETH, Solana→SOL.\n"+
+			"- Only include tickers that are clearly named or unambiguously implied. Do NOT invent or infer tickers from generic phrases.\n"+
+			"- If news is general market commentary without a specific coin, return NONE.\n"+
+			"\n"+
+			"Output discipline:\n"+
+			"- Return ONLY the result string. No explanation, no punctuation outside the format, no extra text, no quotes, no markdown.\n"+
+			"- Confidence is MANDATORY for each ticker. Format strictly as TICKER:CONFIDENCE.\n"+
+			"\n"+
+			"Examples:\n"+
+			"- \"Visa partners with Solana for stablecoin payments\" → UP:SOL:high\n"+
+			"- \"Analyst predicts Bitcoin could reach $200k\" → UP:BTC:low\n"+
+			"- \"SEC sues Ripple over XRP sales\" → DOWN:XRP:high\n"+
+			"- \"Ethereum upgrade may cause short-term volatility\" → UP:ETH:medium\n"+
+			"- \"Crypto market sees $50M outflow today\" → NONE\n"+
+			"\n"+
 			"Title: %s\nContent: %s",
 		title, description,
 	)

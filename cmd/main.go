@@ -24,12 +24,14 @@ import (
 	"github.com/osman/bot-traider/internal/shared/exchange"
 	"github.com/osman/bot-traider/internal/shared/logger"
 	redisclient "github.com/osman/bot-traider/internal/shared/redis"
+	"github.com/osman/bot-traider/internal/shared/risk"
 	"github.com/osman/bot-traider/internal/shared/stats"
 	"github.com/osman/bot-traider/internal/shared/telegram"
 	"github.com/osman/bot-traider/internal/ticker"
 	"github.com/osman/bot-traider/internal/trade"
 	"github.com/osman/bot-traider/internal/trade_strategies/grid"
 	"github.com/osman/bot-traider/internal/trade_strategies/microscalping"
+	"github.com/osman/bot-traider/internal/trade_strategies/news_momentum"
 	tinkoff_daytrading "github.com/osman/bot-traider/internal/trade_strategies/tinkoff_daytrading"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -244,6 +246,12 @@ func main() {
 	tradeSvc.WithOnTradeClose(tradeNotif.OnTradeClose)
 	tradeSvc.WithOnTradeCloseError(tradeNotif.OnTradeCloseError)
 
+	// --- Risk Manager — общий учёт лимитов и PnL ---
+	// Подключается до стратегий, чтобы они могли проверять CanOpen перед открытием.
+	riskMgr := risk.New(risk.LoadConfig(), log.With(zap.String("component", "risk")))
+	riskMgr.WithTelegram(tgNotifier, tradesThreadID)
+	tradeSvc.WithOnTradeClose(riskMgr.OnTradeClose)
+
 	// При закрытии позиции сразу обновляем стримы: если символ выпал из топа
 	// пока сделка была открыта — он отпишется немедленно, не ждя следующего обновления топа.
 	//Ёп-твою-мать
@@ -269,11 +277,28 @@ func main() {
 
 
 	gridCfg := grid.LoadConfig()
-	grid.New(ctx, pool, tickerService, topProvider.Symbols(), restClients[gridCfg.Exchange], tgNotifier, tradesThreadID, log)
+	// Grid торгует ТОЛЬКО символы из GRID_SYMBOLS — не из top-volatile.
+	// klineProvider всегда реальный binance — даже в EMULATION_ENABLED, потому что
+	// исторические свечи не приводят к сделкам и нужны для ATR/ADX.
+	gridSvc := grid.New(ctx, pool, tickerService, gridCfg.Symbols,
+		restClients[gridCfg.Exchange], binanceRest,
+		tgNotifier, tradesThreadID, log)
+	if gridSvc != nil {
+		gridSvc.WithRiskManager(riskMgr)
+	}
 
 
 	// --- RSS News ---
-	news.New(ctx, pool, tgNotifier, sharedconfig.GetEnvBool("NEWS_ENABLED", false), sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0), sharedconfig.GetEnvInt("NEWS_FETCH_INTERVAL_MIN", 30), log)
+	newsSvc := news.New(ctx, pool, tgNotifier, sharedconfig.GetEnvBool("NEWS_ENABLED", false), sharedconfig.GetEnvInt("TELEGRAM_NEWS_THREAD_ID", 0), sharedconfig.GetEnvInt("NEWS_FETCH_INTERVAL_MIN", 30), log)
+
+	// --- News-Momentum стратегия ---
+	// Подписывается на NewsSignal от news.Service и торгует high-confidence UP-сигналы.
+	// klineProvider — binanceRest (для anti-frontrun проверки изменения цены за час).
+	newsMomentumSvc := news_momentum.New(ctx, tradeSvc, binanceRest, tickerService, riskMgr, log)
+	if newsMomentumSvc != nil && newsSvc != nil {
+		newsSvc.WithSignalListener(newsMomentumSvc.OnNewsSignal)
+		log.Info("news_momentum: subscribed to news signals")
+	}
 
 
 	// --- Запуск бирж ---

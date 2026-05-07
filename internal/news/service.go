@@ -29,6 +29,11 @@ type Summarizer interface {
 
 type fetchFunc func(ctx context.Context) ([]rss.Item, error)
 
+// SignalListener — колбэк, вызываемый для каждой новости с распарсенным сигналом
+// после того, как Ollama-summarizer вернул непустой результат. Сигнал содержит
+// тикеры с направлением и уверенностью; стратегии сами решают, какие из них торговать.
+type SignalListener func(signal NewsSignal)
+
 // Service периодически опрашивает RSS-ленты и сохраняет новые статьи.
 type Service struct {
 	repo             *Repository
@@ -37,25 +42,31 @@ type Service struct {
 	notifier         TelegramNotifier
 	newsThreadID     int
 	summarizer       Summarizer
+	signalListeners  []SignalListener
 }
 
 
-func New(ctx context.Context, pool *pgxpool.Pool, tgNotifier TelegramNotifier, newsEnabled bool, newsThreadID int, intervalMin int, log *zap.Logger) {
-		if newsEnabled {
-		newsRepo := NewRepository(pool, log.With(zap.String("component", "news")))
-		newsSvc := NewService(newsRepo, log.With(zap.String("component", "news")), intervalMin)
-		newsSvc.WithTelegramNotifier(tgNotifier, newsThreadID)
-		ollamaClient := ollama.NewClient(ollama.LoadConfig())
-		newsSvc.WithSummarizer(ollamaClient)
-		log.Info("news: Ollama summarizer enabled",
-			zap.String("url", ollama.LoadConfig().URL),
-			zap.String("model", ollama.LoadConfig().Model),
-		)
-		go newsSvc.Start(ctx)
-		log.Info("news: RSS parser enabled", zap.Int("news_thread_id", newsThreadID))
-	} else {
+// New создаёт и запускает news.Service если newsEnabled=true.
+// Возвращает указатель на сервис (или nil, если выключен) — это позволяет
+// внешнему коду подключить SignalListener'ы (например, news_momentum стратегию).
+// Стартует фоновый scheduler в горутине.
+func New(ctx context.Context, pool *pgxpool.Pool, tgNotifier TelegramNotifier, newsEnabled bool, newsThreadID int, intervalMin int, log *zap.Logger) *Service {
+	if !newsEnabled {
 		log.Info("news: RSS parser disabled (NEWS_ENABLED=false)")
+		return nil
 	}
+	newsRepo := NewRepository(pool, log.With(zap.String("component", "news")))
+	newsSvc := NewService(newsRepo, log.With(zap.String("component", "news")), intervalMin)
+	newsSvc.WithTelegramNotifier(tgNotifier, newsThreadID)
+	ollamaClient := ollama.NewClient(ollama.LoadConfig())
+	newsSvc.WithSummarizer(ollamaClient)
+	log.Info("news: Ollama summarizer enabled",
+		zap.String("url", ollama.LoadConfig().URL),
+		zap.String("model", ollama.LoadConfig().Model),
+	)
+	go newsSvc.Start(ctx)
+	log.Info("news: RSS parser enabled", zap.Int("news_thread_id", newsThreadID))
+	return newsSvc
 }
 
 // NewService создаёт Service.
@@ -76,6 +87,12 @@ func (s *Service) WithTelegramNotifier(n TelegramNotifier, threadID int) {
 // WithSummarizer подключает LLM-суммаризатор (Ollama) для перевода новостей на русский.
 func (s *Service) WithSummarizer(sm Summarizer) {
 	s.summarizer = sm
+}
+
+// WithSignalListener регистрирует колбэк для каждой новости с распарсенным сигналом.
+// Несколько листенеров складываются в slice и вызываются по очереди.
+func (s *Service) WithSignalListener(fn SignalListener) {
+	s.signalListeners = append(s.signalListeners, fn)
 }
 
 // FetchAndSave опрашивает все RSS-ленты параллельно и сохраняет новые статьи.
@@ -257,6 +274,24 @@ func (s *Service) FetchAndSave(ctx context.Context) {
 		if signal == "" || signal == "NONE" {
 			continue
 		}
+
+		tickers := ParseSignal(signal)
+		if len(tickers) > 0 {
+			ev := NewsSignal{
+				Source:      a.Source,
+				GUID:        a.GUID,
+				Title:       a.Title,
+				Link:        a.Link,
+				PublishedAt: a.PublishedAt,
+				Tickers:     tickers,
+				RawSignal:   signal,
+			}
+			for _, fn := range s.signalListeners {
+				fn := fn
+				go fn(ev)
+			}
+		}
+
 		line := formatSignalMsg(signal, a.Link)
 		if line == "" {
 			continue
@@ -326,23 +361,44 @@ func formatListingBlock(a *Article, analysis string) string {
 	return sb.String()
 }
 
-// formatSignalMsg формирует TG-сообщение из сигнала вида "UP:BTC,ETH", "DOWN:SOL" или "UP:BTC|DOWN:ETH".
+// formatSignalMsg формирует TG-сообщение из распарсенного сигнала.
+// Поддерживает формат с confidence: "UP:BTC:high,ETH:medium|DOWN:SOL:low".
+// Каждый тикер отображается с эмодзи уверенности: 🔥 high / ⚡ medium / 💭 low.
 func formatSignalMsg(signal, link string) string {
-	var lines []string
-	for _, part := range strings.Split(signal, "|") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "UP:") {
-			tickers := strings.ReplaceAll(strings.TrimPrefix(part, "UP:"), ",", " ")
-			lines = append(lines, fmt.Sprintf("🟢 %s 📈", tickers))
-		} else if strings.HasPrefix(part, "DOWN:") {
-			tickers := strings.ReplaceAll(strings.TrimPrefix(part, "DOWN:"), ",", " ")
-			lines = append(lines, fmt.Sprintf("🔴 %s 📉", tickers))
-		}
-	}
-	if len(lines) == 0 {
+	tickers := ParseSignal(signal)
+	if len(tickers) == 0 {
 		return ""
 	}
+	upParts := make([]string, 0, len(tickers))
+	downParts := make([]string, 0, len(tickers))
+	for _, t := range tickers {
+		piece := fmt.Sprintf("%s%s", t.Symbol, confidenceEmoji(t.Confidence))
+		if t.Direction == DirectionUp {
+			upParts = append(upParts, piece)
+		} else {
+			downParts = append(downParts, piece)
+		}
+	}
+	var lines []string
+	if len(upParts) > 0 {
+		lines = append(lines, fmt.Sprintf("🟢 %s 📈", strings.Join(upParts, " ")))
+	}
+	if len(downParts) > 0 {
+		lines = append(lines, fmt.Sprintf("🔴 %s 📉", strings.Join(downParts, " ")))
+	}
 	return strings.Join(lines, "\n") + fmt.Sprintf(" - <a href=%q>читать</a>", link)
+}
+
+// confidenceEmoji возвращает суффикс-эмодзи для уровня уверенности.
+func confidenceEmoji(c Confidence) string {
+	switch c {
+	case ConfidenceHigh:
+		return "🔥"
+	case ConfidenceLow:
+		return "💭"
+	default:
+		return "⚡"
+	}
 }
 
 // limitBySource оставляет не более n последних статей на каждый источник.

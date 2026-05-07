@@ -28,6 +28,7 @@ type GridState struct {
 	QtyPerLevel  float64     // объём в Base Currency на каждый уровень
 	StartedAt    time.Time
 	Active       bool
+	Paused       bool         // true если ADX-фильтр приостановил сетку (ждём resume)
 	CurrentPrice float64
 	PriceCh      chan float64 // канал цен от OnTicker для watchGrid
 	SessionID    uuid.UUID    // уникальный ID сессии, генерируется при startGrid

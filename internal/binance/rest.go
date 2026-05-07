@@ -510,6 +510,80 @@ func (c *RestClient) GetTopVolatile(ctx context.Context, limit int) ([]VolatileT
 	return tickers[:limit], nil
 }
 
+// GetKlines возвращает последние limit свечей по символу.
+// Использует публичный эндпоинт GET /api/v3/klines (авторизация не требуется).
+// interval: "1m", "5m", "15m", "1h", "4h", "1d" и т.д.
+func (c *RestClient) GetKlines(ctx context.Context, symbol, interval string, limit int) ([]exchange.Kline, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("interval", interval)
+	params.Set("limit", strconv.Itoa(limit))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/api/v3/klines?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.doWithRetry(req)
+	if err != nil {
+		return nil, fmt.Errorf("binance get klines: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("binance get klines: status %d body: %s", resp.StatusCode, body)
+	}
+
+	// Формат свечи: массив из 12 полей; нас интересуют первые 7.
+	// [openTime, open, high, low, close, volume, closeTime, ...]
+	var raw [][]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("binance get klines unmarshal: %w", err)
+	}
+
+	klines := make([]exchange.Kline, 0, len(raw))
+	for _, row := range raw {
+		if len(row) < 7 {
+			continue
+		}
+		var openMs, closeMs int64
+		if err := json.Unmarshal(row[0], &openMs); err != nil {
+			continue
+		}
+		if err := json.Unmarshal(row[6], &closeMs); err != nil {
+			continue
+		}
+		var openS, highS, lowS, closeS, volS string
+		json.Unmarshal(row[1], &openS)  //nolint:errcheck
+		json.Unmarshal(row[2], &highS)  //nolint:errcheck
+		json.Unmarshal(row[3], &lowS)   //nolint:errcheck
+		json.Unmarshal(row[4], &closeS) //nolint:errcheck
+		json.Unmarshal(row[5], &volS)   //nolint:errcheck
+
+		open, _ := strconv.ParseFloat(openS, 64)
+		high, _ := strconv.ParseFloat(highS, 64)
+		low, _ := strconv.ParseFloat(lowS, 64)
+		closeP, _ := strconv.ParseFloat(closeS, 64)
+		vol, _ := strconv.ParseFloat(volS, 64)
+
+		klines = append(klines, exchange.Kline{
+			OpenTime:  time.UnixMilli(openMs),
+			CloseTime: time.UnixMilli(closeMs),
+			Open:      open,
+			High:      high,
+			Low:       low,
+			Close:     closeP,
+			Volume:    vol,
+		})
+	}
+	return klines, nil
+}
+
 // doWithRetry выполняет запрос с повтором при 429 (rate-limit).
 func (c *RestClient) doWithRetry(req *http.Request) (*http.Response, error) {
 	start := time.Now()
